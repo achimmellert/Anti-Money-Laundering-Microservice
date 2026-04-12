@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     NUMERIC_FEATURES = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
 
+
+    # nur für Local Development
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
