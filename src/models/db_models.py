@@ -1,10 +1,11 @@
-from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index
+from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index, Text, JSON
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import registry, Mapped, mapped_column
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.mysql import JSON as MySQLJSON
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
 
 Base = registry().generate_base()
@@ -59,7 +60,7 @@ class SuspiciousTransactions(Base):
 
 
 class TransactionsHistory(Base):
-    __tablename__ = "transactions_history"
+    __tablename__ = "transaction_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(UUID (as_uuid=False), unique=True, index=True)
@@ -94,4 +95,21 @@ class MonitoringInference(Base):
     # Zusammengesetzter Index aus timestamp und decision (Für späteres Dashboard)
     __table_args__ = (
         Index("ix_monitoring_ts_decision", "timestamp", "decision"),
+    )
+
+
+class DeadLetterQueue(Base):
+    __tablename__ = "dead_letter_queue"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    task_name: Mapped[str] = mapped_column(String(255))
+    event_id: Mapped[str] = mapped_column(String(255))
+
+    # Type-hinting JSON as a dict makes it easier to work with in tasks
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    error_msg: Mapped[str] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc)
     )
