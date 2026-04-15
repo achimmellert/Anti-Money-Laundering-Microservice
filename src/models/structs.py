@@ -20,5 +20,5 @@ class HistoryStruct(msgspec.Struct, omit_defaults=True):
     timestamp: Optional[datetime] = None
 
 # Pre-compiled tools for the helper
-HISTORY_DECODER = msgspec.json.Decoder(List[HistoryStruct])
+HISTORY_DECODER = msgspec.json.Decoder(List[HistoryStruct]) # Returns a list of HistoryStruct instances
 HISTORY_ENCODER = msgspec.json.Encoder()
