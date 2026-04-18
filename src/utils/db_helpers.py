@@ -1,6 +1,6 @@
 import redis
 import msgspec
-from loguru import logger as log
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Any
 from sqlalchemy.orm import Session
@@ -11,23 +11,22 @@ from src.models.structs import HistoryStruct, HISTORY_DECODER, HISTORY_ENCODER
 from src.services.database import SessionLocal
 from src.config.settings import settings
 
-
-# Use decode_responses=False for maximum msgspec speed
+log = logging.getLogger(__name__)
 redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
 
 
 # --- INTERNAL HELPERS ---
 
-def _get_cached_history(session: Session, user_id: str, limit: int) -> List[HistoryStruct]:
-    """Internal: Tries Redis first, falls back to SQL, then hydrates cache."""
+def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Any]:
+    """Tries Redis first, falls back to SQL, and ensures consistent return types."""
     if not user_id: return []
     key = f"hist:{user_id}"
 
-    # 1. High-Speed Batch Read from Redis
+    # 1. Redis Look-up
     try:
         raw_data = redis_client.lrange(key, 0, limit - 1)
         if raw_data:
-            # The "Byte-Sandwich" trick for 80x faster decoding
+            # Decode into list of structs
             return HISTORY_DECODER.decode(b"[" + b",".join(raw_data) + b"]")
     except Exception as e:
         log.warning(f"Redis Read Error for {user_id}: {e}")
@@ -37,49 +36,48 @@ def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Hist
         or_(TransactionsHistory.nameOrig == user_id, TransactionsHistory.nameDest == user_id)
     ).order_by(desc(TransactionsHistory.step)).limit(limit).all()
 
-    # 3. Cache Hydration (Fill the empty drawer)
+    # 3. Cache Hydration
     if rows:
         try:
+            # We convert to structs for consistent caching and returning
+            structs = [
+                HistoryStruct(
+                    step=r.step, type=r.type, amount=float(r.amount),
+                    nameOrig=r.nameOrig, nameDest=r.nameDest,
+                    oldbalanceOrg=float(r.oldbalanceOrg or 0),
+                    newbalanceOrig=float(r.newbalanceOrig or 0),
+                    timestamp=r.timestamp
+                ) for r in rows
+            ]
             with redis_client.pipeline() as pipe:
                 pipe.delete(key)
-                for r in rows:
-                    s = HistoryStruct(
-                        step=r.step, type=r.type, amount=float(r.amount),
-                        nameOrig=r.nameOrig, nameDest=r.nameDest,
-                        oldbalanceOrg=float(r.oldbalanceOrg or 0),
-                        newbalanceOrig=float(r.newbalanceOrig or 0),
-                        timestamp=r.timestamp
-                    )
+                for s in structs:
                     pipe.rpush(key, HISTORY_ENCODER.encode(s))
                 pipe.expire(key, 3600)
                 pipe.execute()
+            return structs
         except Exception as e:
             log.warning(f"Redis Hydration Error: {e}")
 
-    # Return the rows (SQLAlchemy handles the conversion to objects for the caller)
     return rows
 
 
 # --- PUBLIC API ---
 
 def get_account_history(session: Session, nameOrig: str, nameDest: str, limit: int = 200):
-    """Combines history for both sender and receiver."""
     sender_rows = _get_cached_history(session, nameOrig, limit)
     receiver_rows = _get_cached_history(session, nameDest, limit)
     return list(sender_rows) + list(receiver_rows)
 
 
 def get_user_history(session: Session, user_id: str, limit: int = 100):
-    """Retrieves full history for a specific user ID."""
     return _get_cached_history(session, user_id, limit)
 
 
 def update_transaction_state(session: Session, event_id: str, status: str, prob: float, payload: dict | None = None):
-    """Handles the state lifecycle and prevents status race conditions."""
     ts_row = session.query(TransactionsState).filter_by(event_id=event_id).first()
 
     if ts_row is None and payload:
-        # Initial Creation
         ts_row = TransactionsState(
             event_id=event_id,
             type=payload.get("type"),
@@ -92,26 +90,29 @@ def update_transaction_state(session: Session, event_id: str, status: str, prob:
         session.add(ts_row)
 
     if ts_row:
-        # Race-Condition Fix: Don't overwrite finished states with 'PENDING'
+        # Race-Condition Fix: Don't let PENDING overwrite a finished state
         if status == "PENDING" and ts_row.status in ["SUCCESS", "BLOCKED"]:
             return
 
         ts_row.status = status
         ts_row.fraud_probability = prob
         ts_row.decided_at = datetime.now(timezone.utc)
+        # Note: We don't commit here so the calling task can batch updates
 
 
 def save_history_transaction(session: Session, data: dict, event_id: str):
     """Saves to SQL and updates the sliding-window cache in Redis."""
-    # 1. Clean data using modern unpacking (Filtering only columns that exist)
     hist = TransactionsHistory(
         event_id=event_id,
         **{k: v for k, v in data.items() if hasattr(TransactionsHistory, k)}
     )
     session.add(hist)
 
-    # 2. Update Redis (Write-Through)
+    # CRITICAL: Commit immediately so parallel enrichment tasks can see this record
+    session.commit()
+
     try:
+        # Prepare for Redis
         struct_data = HistoryStruct(**{k: v for k, v in data.items() if k in HistoryStruct.__struct_fields__})
         encoded_obj = HISTORY_ENCODER.encode(struct_data)
 
@@ -127,22 +128,24 @@ def save_history_transaction(session: Session, data: dict, event_id: str):
 
 
 def save_suspicious_transaction(session: Session, data: dict, event_id: str, plot_path: str):
-    """Logs flagged transactions for manual review."""
+    """Logs flagged transactions. Commit is required for the SHAP worker to find it."""
     sus = SuspiciousTransactions(
         event_id=event_id,
         amount=float(data.get("amount", 0.0)),
         nameOrig=data.get("nameOrig"),
         nameDest=data.get("nameDest"),
         type=data.get("type"),
+        plot_path=plot_path,  # Now correctly assigned
         timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None
     )
     session.add(sus)
-    # Note: Commit is usually handled by the calling Task's context
-    log.info(f"SHAP-Plot for {event_id} stored at: {plot_path}")
+
+    # CRITICAL: Commit here so the generate_shap_task worker finds the record instantly
+    session.commit()
+    log.info(f"Suspicious transaction {event_id} logged. Path: {plot_path}")
 
 
 def save_to_dlq(task_name: str, event_id: str, payload: dict, error_msg: str):
-    """Safely moves failed tasks to a proper DB table instead of raw SQL strings."""
     try:
         with SessionLocal() as session:
             entry = DeadLetterQueue(
