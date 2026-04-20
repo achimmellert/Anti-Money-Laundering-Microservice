@@ -1,6 +1,12 @@
 from typing import List
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import MySQLDsn, RedisDsn
+
+
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent.parent
+env_path = project_root / ".env"
 
 
 class Settings(BaseSettings):
@@ -28,7 +34,7 @@ class Settings(BaseSettings):
 
 
     # nur für Local Development
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=env_path, env_file_encoding="utf-8")
 
 
 settings = Settings()

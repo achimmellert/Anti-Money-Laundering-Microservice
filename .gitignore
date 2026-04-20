@@ -218,5 +218,6 @@ __marimo__/
 # JetBrains
 .idea/
 
-# Jupyter
+# Jupyter+Testdateien
 testings.ipynb
+test.py
