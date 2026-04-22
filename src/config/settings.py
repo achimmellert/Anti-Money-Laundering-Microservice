@@ -32,7 +32,7 @@ class Settings(BaseSettings):
         "pair_transaction_count"
     ]
 
-    NUMERIC_FEATURES = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
+    NUMERIC_FEATURES: List[str] = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
 
 
     # nur für Local Development
