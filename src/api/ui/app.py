@@ -279,7 +279,7 @@ class AMLDashboard:
                 for attempt in range(3):
                     try:
                         resp = await http_client.post(f"{API_URL}/transaction", json=payload)
-                        if resp.status_code == 200:
+                        if resp.status_code in (200, 202):
                             event_id = resp.json()["event_id"]
 
                             row_cells = [

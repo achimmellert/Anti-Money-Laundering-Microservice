@@ -10,9 +10,9 @@ current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent.parent
 env_path = project_root / ".env"
 
-MODEL_PATH: str = "models/model.pkl"
-FEATNAMES_PATH: str = "models/feature_names.npy"
-PREPROC_PATH: str = "models/preprocessor.joblib"
+MODEL_PATH: str = "ml_models/model.json"
+FEATNAMES_PATH: str = "ml_models/feature_names.npy"
+PREPROC_PATH: str = "ml_models/preprocessor.pkl"
 
 START_STEP: str = "743"
 
@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     MODEL_PATH: str
     FEATNAMES_PATH: str
     START_STEP: str
+
+    MODEL_PATH: str = "ml_models/model.json"
+    FEATNAMES_PATH: str = "ml_models/feature_names.npy"
+    PREPROC_PATH: str = "ml_models/preprocessor.pkl"
+
+    START_STEP: str = "743"
 
     RAW_FEATURE_COLUMNS: List[str] = [
         "type", "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",

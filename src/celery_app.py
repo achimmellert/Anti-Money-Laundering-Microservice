@@ -10,8 +10,8 @@ from src.config.settings import settings
 
 celery_app = Celery(
     "aml_tasks",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
+    broker=settings.REDIS_URL.unicode_string(),
+    backend=settings.REDIS_URL.unicode_string(),
     include=[
         "src.tasks.enrichment",
         "src.tasks.inference",

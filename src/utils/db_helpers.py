@@ -14,7 +14,8 @@ from src.services.database import SessionLocal
 from src.config.settings import settings
 
 log = logging.getLogger(__name__)
-redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
+# Change to this:
+redis_client = redis.Redis.from_url(settings.REDIS_URL.unicode_string(), decode_responses=False)
 
 
 # --- INTERNAL HELPERS ---
