@@ -221,3 +221,4 @@ __marimo__/
 # Jupyter+Testdateien
 testings.ipynb
 test.py
+src/services/model_wrappers.py
