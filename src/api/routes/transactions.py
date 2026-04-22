@@ -25,10 +25,13 @@ router = APIRouter()
 def get_next_step() -> int:
     """Atomic counter using Redis to prevent race conditions."""
     try:
+        # Seed the starting step from settings if the key is empty
+        if not redis_client.exists("global_transaction_step"):
+            redis_client.set("global_transaction_step", settings.START_STEP)
         return redis_client.incr("global_transaction_step")
     except Exception as e:
         log.warning(f"Redis INCR failed, falling back: {e}")
-        return settings.START_STEP
+        return int(settings.START_STEP) # Ensure it returns an integer
 
 
 @router.post("/transaction", status_code=status.HTTP_202_ACCEPTED)
@@ -148,3 +151,5 @@ def healthcheck(db: Session = Depends(get_db_session)):
 
     http_status = 200 if all(status_dict.values()) else 503
     return JSONResponse(content=status_dict, status_code=http_status)
+
+
