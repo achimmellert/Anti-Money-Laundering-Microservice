@@ -46,6 +46,12 @@ services:
     volumes:
       - .:/app
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    # Added Healthcheck to ensure DB tables are created before workers start
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   persistence-worker:
@@ -60,6 +66,8 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+      fastapi-app:
+        condition: service_healthy # Will wait for FastAPI healthcheck
     volumes:
       - .:/app
     command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
@@ -77,6 +85,8 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+      fastapi-app:
+        condition: service_healthy # Will wait for FastAPI healthcheck
     volumes:
       - .:/app
     command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
@@ -95,6 +105,8 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+      fastapi-app:
+        condition: service_healthy # Will wait for FastAPI healthcheck
     volumes:
       - .:/app
     command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4"]
