@@ -1,0 +1,117 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: aml_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mysql:
+    image: mysql:8.0
+    container_name: aml_mysql
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  fastapi-app:
+    build: .
+    container_name: aml_fastapi
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
+
+  persistence-worker:
+    build: .
+    container_name: aml_persistence_worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
+    restart: unless-stopped
+
+  enrichment-worker:
+    build: .
+    container_name: aml_enrichment_worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
+    restart: unless-stopped
+
+  inference-worker:
+    build: .
+    container_name: aml_inference_worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PYTHONPATH: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4"]
+    restart: unless-stopped
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.3
+    container_name: aml_mlflow
+    ports:
+      - "5000:5000"
+    command: >
+      /bin/sh -c "pip install pymysql && mlflow server --backend-store-uri mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE} --artifacts-destination /mlflow_artifacts --serve-artifacts --host 0.0.0.0"
+    volumes:
+      - ./mlflow_artifacts:/mlflow_artifacts
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
