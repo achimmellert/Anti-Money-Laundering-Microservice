@@ -10,6 +10,12 @@ current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent.parent
 env_path = project_root / ".env"
 
+MODEL_PATH: str = "models/model.pkl"
+FEATNAMES_PATH: str = "models/feature_names.npy"
+PREPROC_PATH: str = "models/preprocessor.joblib"
+
+START_STEP: str = "743"
+
 
 class Settings(BaseSettings):
     REDIS_URL: RedisDsn
@@ -36,7 +42,11 @@ class Settings(BaseSettings):
 
 
     # nur für Local Development
-    model_config = SettingsConfigDict(env_file=env_path, env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=env_path,
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 
 settings = Settings()
