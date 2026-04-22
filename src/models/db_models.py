@@ -1,3 +1,6 @@
+# src/models/db_model.py
+
+
 from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index, Text, JSON
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import registry, Mapped, mapped_column

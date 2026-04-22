@@ -1,3 +1,5 @@
+# src/celery_app.py
+
 from celery import Celery
 from celery.signals import worker_process_init
 from src.config.settings import settings

@@ -1,3 +1,5 @@
+# src/api/lifespan.py
+
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI

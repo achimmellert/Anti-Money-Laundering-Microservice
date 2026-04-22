@@ -1,3 +1,5 @@
+# src/config/settings.py
+
 from typing import List
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
