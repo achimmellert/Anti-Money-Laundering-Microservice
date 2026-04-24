@@ -13,6 +13,13 @@ from src.config.settings import settings
     "receiver_ratio_upper": train_df["receiver_amount_to_avg_ratio"].quantile(0.99)
 }"""
 
+
+REQUIRED_COLS = [
+    "step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig",
+    "nameDest", "oldbalanceDest", "newbalanceDest", "timestamp"
+]
+
+
 # --- STATIC ML THRESHOLDS ---
 # These should come from your Training Dataset's 99th percentile, NOT calculated on the fly.
 GLOBAL_THRESHOLDS = {

@@ -1,3 +1,5 @@
+# src/models/structs.py
+
 import msgspec
 from datetime import datetime
 from typing import Optional, List

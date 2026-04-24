@@ -1,3 +1,5 @@
+# src/services/inference.py
+
 import os
 import logging
 import numpy as np
@@ -15,7 +17,6 @@ matplotlib.use('Agg')  # Force non-interactive, memory-safe backend
 import matplotlib.pyplot as plt
 
 from src.config.settings import settings
-from src.services.model_wrappers import SklearnPyTorchWrapper
 
 log = logging.getLogger(__name__)
 

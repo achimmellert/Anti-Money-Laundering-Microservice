@@ -1,3 +1,5 @@
+# src/utils/db_helpers.py
+
 import redis
 import msgspec
 import logging
@@ -12,7 +14,8 @@ from src.services.database import SessionLocal
 from src.config.settings import settings
 
 log = logging.getLogger(__name__)
-redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
+# Change to this:
+redis_client = redis.Redis.from_url(settings.REDIS_URL.unicode_string(), decode_responses=False)
 
 
 # --- INTERNAL HELPERS ---
@@ -102,10 +105,23 @@ def update_transaction_state(session: Session, event_id: str, status: str, prob:
 
 def save_history_transaction(session: Session, data: dict, event_id: str):
     """Saves to SQL and updates the sliding-window cache in Redis."""
-    hist = TransactionsHistory(
-        event_id=event_id,
-        **{k: v for k, v in data.items() if hasattr(TransactionsHistory, k)}
-    )
+
+    # 1. Guarantee default values of 0.0 for any missing balances
+    db_payload = {
+        "oldbalanceOrg": float(data.get("oldbalanceOrg", 0.0)),
+        "newbalanceOrig": float(data.get("newbalanceOrig", 0.0)),
+        "oldbalanceDest": float(data.get("oldbalanceDest", 0.0)),
+        "newbalanceDest": float(data.get("newbalanceDest", 0.0))
+    }
+
+    # 2. Merge in the rest of the actual data, ignoring event_id duplicates
+    db_payload.update({
+        k: v for k, v in data.items()
+        if hasattr(TransactionsHistory, k) and k != "event_id"
+    })
+
+    # 3. Save to database
+    hist = TransactionsHistory(event_id=event_id, **db_payload)
     session.add(hist)
 
     # CRITICAL: Commit immediately so parallel enrichment tasks can see this record

@@ -1,3 +1,5 @@
+# src/tasks/persistence.py
+
 from loguru import logger as log
 from src.celery_app import celery_app
 from src.services.database import SessionLocal

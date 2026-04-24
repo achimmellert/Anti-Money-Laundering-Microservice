@@ -1,3 +1,5 @@
+# src/config/settings.py
+
 from typing import List
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +10,12 @@ current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent.parent
 env_path = project_root / ".env"
 
+MODEL_PATH: str = "ml_models/model.json"
+FEATNAMES_PATH: str = "ml_models/feature_names.npy"
+PREPROC_PATH: str = "ml_models/preprocessor.pkl"
+
+START_STEP: str = "743"
+
 
 class Settings(BaseSettings):
     REDIS_URL: RedisDsn
@@ -15,6 +23,12 @@ class Settings(BaseSettings):
     MODEL_PATH: str
     FEATNAMES_PATH: str
     START_STEP: str
+
+    MODEL_PATH: str = "ml_models/model.json"
+    FEATNAMES_PATH: str = "ml_models/feature_names.npy"
+    PREPROC_PATH: str = "ml_models/preprocessor.pkl"
+
+    START_STEP: str = "743"
 
     RAW_FEATURE_COLUMNS: List[str] = [
         "type", "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
@@ -30,11 +44,15 @@ class Settings(BaseSettings):
         "pair_transaction_count"
     ]
 
-    NUMERIC_FEATURES = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
+    NUMERIC_FEATURES: List[str] = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
 
 
     # nur für Local Development
-    model_config = SettingsConfigDict(env_file=env_path, env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=env_path,
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 
 settings = Settings()
