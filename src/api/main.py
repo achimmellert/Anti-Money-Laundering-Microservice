@@ -3,6 +3,7 @@
 import os
 import logging
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from src.api.lifespan import lifespan
 from src.api.routes.transactions import router as transaction_router
 
@@ -17,6 +18,8 @@ logging.basicConfig(
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(transaction_router, prefix="/api/v1", tags=["transactions"])
+
+Instrumentator().instrument(app).expose(app)
 
 @app.get("/")
 def read_root():

@@ -125,5 +125,39 @@ services:
       mysql:
         condition: service_healthy
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: aml_prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: aml_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+  # This container watches your Redis broker and translates Celery data into Prometheus metrics!
+  celery-exporter:
+    image: danihodovic/celery-exporter:latest
+    container_name: aml_celery_exporter
+    environment:
+      - CE_BROKER_URL=redis://redis:6379/0
+    ports:
+      - "9808:9808"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
 volumes:
   mysql_data:
+  prometheus_data:
+  grafana_data:
