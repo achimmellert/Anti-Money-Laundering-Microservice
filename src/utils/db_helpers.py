@@ -156,7 +156,7 @@ def save_suspicious_transaction(session: Session, data: dict, event_id: str, plo
     )
     session.add(sus)
 
-    # CRITICAL: Commit here so the generate_shap_task worker finds the record instantly
+    # CRITICAL: Commit here so the generate_shap_task worker finds the record instantly!
     session.commit()
     log.info(f"Suspicious transaction {event_id} logged. Path: {plot_path}")
 
