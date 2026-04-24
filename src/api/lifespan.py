@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     log.info("FastAPI starting up...")
 
-    # Let this crash the app if it fails, rather than suppressing it
+    # Let this crash the app if it fails, rather than suppressing it!
     await run_in_threadpool(init_db)
     log.info("Datenbank-Tabellen initialisiert.")
 
