@@ -8,17 +8,15 @@ from src.services.database import init_db
 
 log = logging.getLogger(__name__)
 
+
+# src/api/lifespan.py
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("FastAPI starting up...")
 
-    try:
-        # Prevents synchronous blocking of the async event loop
-        await run_in_threadpool(init_db)
-        log.info("Datenbank-Tabellen initialisiert.")
-    except Exception as e:
-        log.error(f"FEHLER: Konnte DB nicht initialisieren: {e}")
+    # Let this crash the app if it fails, rather than suppressing it
+    await run_in_threadpool(init_db)
+    log.info("Datenbank-Tabellen initialisiert.")
 
     yield
-
     log.info("FastAPI shutting down...")

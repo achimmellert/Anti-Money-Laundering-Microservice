@@ -1,4 +1,4 @@
-# src/models/db_model.py
+# src/models/db_models.py
 
 
 from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index, Text, JSON
@@ -18,6 +18,7 @@ class TransactionStatus(Enum):
     PENDING = "PENDING"
     SUCCESS = "SUCCESS"
     BLOCKED = "BLOCKED"
+    PERSISTED = "PERSISTED"
 
 class TransactionType(Enum):
     TRANSFER = "TRANSFER"
@@ -34,7 +35,7 @@ class TransactionsState(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
 
     # event_id indexiert fürs schnelle Lesen (Inhaltsverzeichnis im RAM)
-    event_id: Mapped[str] = mapped_column(UUID (as_uuid=False), index=True, unique=True)
+    event_id: Mapped[str] = mapped_column(String(36), index=True, unique=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     nameOrig: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
@@ -53,11 +54,14 @@ class SuspiciousTransactions(Base):
     __tablename__ = "suspicious_transactions"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    event_id: Mapped[str] = mapped_column(UUID (as_uuid=False), unique=True, nullable=False)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     nameOrig: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     nameDest: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+
+    plot_path: Mapped[str] = mapped_column(String(255), nullable=True)
+
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     logged_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -66,7 +70,7 @@ class TransactionsHistory(Base):
     __tablename__ = "transaction_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    event_id: Mapped[str] = mapped_column(UUID (as_uuid=False), unique=True, index=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     step: Mapped[int] = mapped_column(Integer, index=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False, index=True)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -84,10 +88,10 @@ class MonitoringInference(Base):
     __tablename__ = "monitoring_inference"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    event_id: Mapped[str] = mapped_column(UUID (as_uuid=False), unique=True, index=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     y_pred_proba: Mapped[float] = mapped_column(Float, nullable=False)
-    y_true: Mapped[bool] = mapped_column(BOOLEAN)
+    y_true: Mapped[bool] = mapped_column(BOOLEAN, nullable=True)
     decision: Mapped[TransactionStatus] = mapped_column(
         SQLAlchemyEnum(TransactionStatus), nullable=False
     )

@@ -29,10 +29,10 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_routes={
-        'src.tasks.enrichment.*': {'queue': 'enrichment'},
+        'src.tasks.enrichment.run_enrichment_task': {'queue': 'enrichment'},
         'src.tasks.inference.run_inference_task': {'queue': 'inference'},
-        'src.tasks.inference.generate_shap_task': {'queue': 'inference'},  # Explicitly route the SHAP task
-        'src.tasks.persistence.*': {'queue': 'persistence'},
+        'src.tasks.inference.generate_shap_task': {'queue': 'inference'},
+        'src.tasks.persistence.run_persistence_task': {'queue': 'persistence'},
     }
 )
 

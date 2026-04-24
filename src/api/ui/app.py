@@ -265,8 +265,8 @@ class AMLDashboard:
             reader = csv.DictReader(f)
             count = 0
             for row in reader:
-                if count >= 200:
-                    break
+                #if count >= 200:
+                #    break
 
                 payload = {
                     "amount": float(row["amount"]),
