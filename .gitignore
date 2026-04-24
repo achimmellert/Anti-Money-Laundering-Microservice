@@ -225,3 +225,4 @@ src/services/model_wrappers.py
 ml_models
 data
 src/data
+mlflow_artifacts
