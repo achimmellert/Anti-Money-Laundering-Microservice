@@ -36,6 +36,7 @@ celery_app.conf.update(
     }
 )
 
+
 #sentry_sdk.init(
 #    dsn=settings.SENTRY_DSN,
 #    integrations=[CeleryIntegration()]
