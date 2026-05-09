@@ -145,7 +145,7 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
-  # This container watches your Redis broker and translates Celery data into Prometheus metrics!
+  # watches Redis broker and translates Celery data into Prometheus metrics!
   celery-exporter:
     image: danihodovic/celery-exporter:latest
     container_name: aml_celery_exporter
