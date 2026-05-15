@@ -1,7 +1,7 @@
 # src/api/routes/transactions.py
 
 import uuid
-import logging
+from loguru import logger as log
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, desc
@@ -18,7 +18,7 @@ from src.tasks.enrichment import run_enrichment_task
 from src.tasks.inference import run_inference_task
 from src.celery_app import celery_app
 
-log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -26,12 +26,12 @@ def get_next_step() -> int:
     """Atomic counter using Redis to prevent race conditions."""
     try:
         # Seed the starting step from settings if the key is empty
-        if not redis_client.exists("global_transaction_step"):
-            redis_client.set("global_transaction_step", settings.START_STEP)
+        if redis_client.setnx("global_transaction_step", settings.START_STEP):
+            return int(settings.START_STEP)
         return redis_client.incr("global_transaction_step")
     except Exception as e:
         log.warning(f"Redis INCR failed, falling back: {e}")
-        return int(settings.START_STEP) # Ensure it returns an integer
+        return int(settings.START_STEP)
 
 
 @router.post("/transaction", status_code=status.HTTP_202_ACCEPTED)
@@ -47,11 +47,11 @@ def submit_transaction(transaction: TransactionCreate, db: Session = Depends(get
     try:
         run_persistence_task.delay(data=payload, event_id=event_id)
 
-        intel_pipeline = chain(
+        inference_process_pipeline = chain(
             run_enrichment_task.s(data=payload, event_id=event_id),
             run_inference_task.s()
         )
-        intel_pipeline.apply_async()
+        inference_process_pipeline.apply_async()
 
         log.info(f"Transaction {event_id} queued: Audit started & Intelligence Pipeline chained.")
 
@@ -151,5 +151,3 @@ def healthcheck(db: Session = Depends(get_db_session)):
 
     http_status = 200 if all(status_dict.values()) else 503
     return JSONResponse(content=status_dict, status_code=http_status)
-
-
