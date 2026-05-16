@@ -70,6 +70,7 @@ def submit_transaction(transaction: TransactionCreate, db: Session = Depends(get
 def get_transaction_status(event_id: str, db: Session = Depends(get_db_session)):
     stmt = select(TransactionsState).where(TransactionsState.event_id == event_id)
     row = db.execute(stmt).scalar_one_or_none()
+
     if not row:
         raise HTTPException(status_code=404, detail="Unknown event_id")
 
@@ -103,6 +104,7 @@ def clear_transaction_state(db: Session = Depends(get_db_session)):
 @router.get("/user-history/{user_id}")
 def user_history(user_id: str, db: Session = Depends(get_db_session)):
     rows = get_user_history(db, user_id) # last 100 entries
+
     return [{
         "step": r.step,
         "type": r.type,
@@ -137,6 +139,7 @@ def get_dead_letter_queue(db: Session = Depends(get_db_session)):
 @router.get("/health")
 def healthcheck(db: Session = Depends(get_db_session)):
     status_dict = {"redis_ready": False, "db_ok": False}
+
     try:
         with celery_app.connection() as conn:
             conn.connect()
@@ -151,4 +154,5 @@ def healthcheck(db: Session = Depends(get_db_session)):
         status_dict["db_ok"] = False
 
     http_status = 200 if all(status_dict.values()) else 503
+
     return JSONResponse(content=status_dict, status_code=http_status)
