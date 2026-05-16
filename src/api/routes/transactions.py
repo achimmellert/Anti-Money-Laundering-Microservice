@@ -4,7 +4,7 @@ import uuid
 from loguru import logger as log
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, delete
 from sqlalchemy.orm import Session
 from celery import chain
 
@@ -68,7 +68,8 @@ def submit_transaction(transaction: TransactionCreate, db: Session = Depends(get
 
 @router.get("/transaction-status/{event_id}")
 def get_transaction_status(event_id: str, db: Session = Depends(get_db_session)):
-    row = db.query(TransactionsState).filter(TransactionsState.event_id == event_id).first()
+    stmt = select(TransactionsState).where(TransactionsState.event_id == event_id)
+    row = db.execute(stmt).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Unknown event_id")
 
@@ -90,7 +91,8 @@ def get_transaction_status(event_id: str, db: Session = Depends(get_db_session))
 @router.delete("/transaction-state")
 def clear_transaction_state(db: Session = Depends(get_db_session)):
     try:
-        db.query(TransactionsState).delete()
+        stmt = delete(TransactionsState)
+        db.execute(stmt)
         db.commit()
         return {"message": "TransactionState cleared successfully."}
     except Exception as e:
@@ -100,7 +102,7 @@ def clear_transaction_state(db: Session = Depends(get_db_session)):
 
 @router.get("/user-history/{user_id}")
 def user_history(user_id: str, db: Session = Depends(get_db_session)):
-    rows = get_user_history(db, user_id)
+    rows = get_user_history(db, user_id) # last 100 entries
     return [{
         "step": r.step,
         "type": r.type,
@@ -113,7 +115,6 @@ def user_history(user_id: str, db: Session = Depends(get_db_session)):
 
 @router.get("/dlq")
 def get_dead_letter_queue(db: Session = Depends(get_db_session)):
-    """Modern SQLAlchemy 2.0 implementation instead of raw SQL strings."""
     try:
         stmt = select(DeadLetterQueue).order_by(desc(DeadLetterQueue.created_at)).limit(50)
         results = db.execute(stmt).scalars().all()
