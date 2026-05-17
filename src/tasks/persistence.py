@@ -1,40 +1,50 @@
-# src/tasks/persistence.py
-
 from loguru import logger as log
 from src.celery_app import celery_app
+from src.models.db_models import TransactionStatus
 from src.services.database import SessionLocal
 from src.utils.db_helpers import (
     update_transaction_state,
-    save_history_transaction, # Added this
+    save_history_transaction,
     save_to_dlq
 )
+from src.models.schemas import TransactionInternal
+
 
 @celery_app.task(bind=True, max_retries=3)
 def run_persistence_task(self, data: dict, event_id: str):
     log.info(f"Starting persistence for Event: {event_id}")
 
+    # 1. Re-hydrate the raw Celery dictionary into Pydantic model
+    try:
+        internal_tx = TransactionInternal.model_validate(data)
+    except Exception as e:
+        # Defensive Programming: If the data is fundamentally broken/missing fields,
+        # retrying won't fix it. Send it straight to the DLQ and abort.
+        log.critical(f"FATAL: Data validation failed for {event_id}. Moving to DLQ. Error: {e}")
+        save_to_dlq("persistence_validation", event_id, data, str(e))
+        return
+
     with SessionLocal() as session:
         try:
-            # 1. Update the 'State' (The metadata: PENDING, PROBABILITY, etc.)
+            # 2. Update the 'State'
             update_transaction_state(
                 session,
                 event_id,
-                status="PERSISTED", # Moving from PENDING to PERSISTED
+                status=TransactionStatus.PERSISTED,
                 prob=0.0,
-                payload=data
+                payload=internal_tx
             )
 
-            # 2. Save to 'History' (The actual transaction + High-speed Redis Update)
-            # This triggers the Write-Through logic we discussed!
-            save_history_transaction(session, data, event_id)
+            # 3. Save to 'History'
+            save_history_transaction(session, payload=internal_tx)
 
-            # 3. Finalize both in one atomic transaction
+            # 4. Finalize both in one atomic transaction (Unit of Work pattern)
             session.commit()
-            log.success(f"Successfully persisted Event and updated Cache: {event_id}")
+            log.info(f"Successfully persisted Event and updated Cache: {event_id}")
 
         except Exception as e:
             session.rollback()
-            log.error(f"Persistence failed for {event_id}: {str(e)}")
+            log.error(f"Persistence DB operation failed for {event_id}: {str(e)}")
 
             # Exponential backoff: 5s, 10s, 20s...
             retry_countdown = 5 * (2 ** self.request.retries)
