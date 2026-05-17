@@ -1,5 +1,3 @@
-# src/models/structs.py
-
 import msgspec
 from datetime import datetime
 from typing import Optional, List
@@ -7,7 +5,6 @@ from typing import Optional, List
 class HistoryStruct(msgspec.Struct, omit_defaults=True):
     """
     High-speed C-struct for Redis.
-    Replaces Pydantic/RowObj for 80x faster parsing.
     """
     step: int
     type: str
@@ -22,5 +19,5 @@ class HistoryStruct(msgspec.Struct, omit_defaults=True):
     timestamp: Optional[datetime] = None
 
 # Pre-compiled tools for the helper
-HISTORY_DECODER = msgspec.json.Decoder(List[HistoryStruct]) # Returns a list of HistoryStruct instances
+HISTORY_DECODER = msgspec.json.Decoder(List[HistoryStruct]) # Decoder needs a precise blueprint of what to expect since the Decoder receives a raw byte string
 HISTORY_ENCODER = msgspec.json.Encoder()
