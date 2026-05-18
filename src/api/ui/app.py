@@ -1,15 +1,16 @@
-# src/api/ui/app.py
-
 import flet as ft
 import httpx
 import csv
 import asyncio
-import os
+from pathlib import Path
 from datetime import datetime
 
+
 API_URL = "http://localhost:8000/api/v1"
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CSV_PATH = os.path.join(BASE_DIR, "data", "test.csv")
+
+CURRENT_FILE = Path(__file__).resolve()
+BASE_DIR = CURRENT_FILE.parents[2]
+CSV_PATH = BASE_DIR / "data" / "test.csv"
 
 http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500, max_keepalive_connections=100))
 
@@ -21,8 +22,7 @@ class AMLDashboard:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 20
 
-        # Limitiert gleichzeitige Status-Abfragen auf 5, schützt den einzigen FastAPI-Worker!
-        self.poll_semaphore = asyncio.Semaphore(5)
+        self.poll_semaphore = asyncio.Semaphore(10)
 
         self.setup_ui()
 
@@ -215,7 +215,6 @@ class AMLDashboard:
                         ft.DataCell(ft.Text(str(r.get("task_name", "")))),
                         ft.DataCell(ft.Text(str(r.get("event_id", ""))[:8] + "...")),
                         ft.DataCell(ft.Text(error_text[:100] + ("..." if len(error_text) > 100 else ""))),
-                        # Kürzt extrem lange Fehler ab
                     ])
                     self.dlq_table.rows.append(row)
         except Exception as ex:
@@ -246,8 +245,8 @@ class AMLDashboard:
 
                         if status in ["SUCCESS", "BLOCKED"]:
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Pooling error for event {event_id}: {ex}")
 
             await asyncio.sleep(2)  # 2 Sekunden warten, entlastet die DB
 
@@ -256,7 +255,7 @@ class AMLDashboard:
         self.progress_text.value = f"Lese Daten aus {CSV_PATH} und schicke sie an API..."
         self.page.update()
 
-        if not os.path.exists(CSV_PATH):
+        if not CSV_PATH.exists():
             self.progress_text.value = f"Fehler: CSV nicht gefunden ({CSV_PATH})"
             self.page.update()
             return
