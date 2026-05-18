@@ -1,6 +1,4 @@
-# src/models/schemas.py
-
-from pydantic import BaseModel, Field, ConfigDict, UUID4, field_validator
+from pydantic import BaseModel, Field, ConfigDict, UUID4
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from src.models.db_models import TransactionType, TransactionStatus
