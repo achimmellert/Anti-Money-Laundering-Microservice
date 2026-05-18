@@ -1,17 +1,17 @@
-# src/models/db_models.py
-
-
 from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index, Text, JSON
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import registry, Mapped, mapped_column
-from sqlalchemy.sql import func
-from sqlalchemy.dialects.mysql import JSON as MySQLJSON
 from enum import Enum
 from datetime import datetime, timezone
 from typing import Any
 
 
 Base = registry().generate_base()
+
+
+def utc_now():
+    """Helper to ensure all default timestamps are strictly UTC."""
+    return datetime.now(timezone.utc)
 
 
 class TransactionStatus(Enum):
@@ -31,10 +31,7 @@ class TransactionType(Enum):
 class TransactionsState(Base):
     __tablename__ = "transactions_state"
 
-    # id fürs effiziente Schreiben (autoincrement) --> schwere Last; UUID als Primärschlüssel zu verwenden wäre sehr ineffizient
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-
-    # event_id indexiert fürs schnelle Lesen (Inhaltsverzeichnis im RAM)
     event_id: Mapped[str] = mapped_column(String(36), index=True, unique=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -42,12 +39,10 @@ class TransactionsState(Base):
     nameDest: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     step: Mapped[int] = mapped_column(Integer)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    status: Mapped[TransactionStatus] = mapped_column(
-        SQLAlchemyEnum(TransactionStatus), default=TransactionStatus.PENDING
-    )
+    status: Mapped[TransactionStatus] = mapped_column(SQLAlchemyEnum(TransactionStatus), default=TransactionStatus.PENDING)
     fraud_probability: Mapped[float] = mapped_column(Float, nullable=True)
     decided_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class SuspiciousTransactions(Base):
@@ -59,11 +54,9 @@ class SuspiciousTransactions(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     nameOrig: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     nameDest: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
-
     plot_path: Mapped[str] = mapped_column(String(255), nullable=True)
-
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    logged_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    logged_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class TransactionsHistory(Base):
@@ -92,14 +85,9 @@ class MonitoringInference(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     y_pred_proba: Mapped[float] = mapped_column(Float, nullable=False)
     y_true: Mapped[bool] = mapped_column(BOOLEAN, nullable=True)
-    decision: Mapped[TransactionStatus] = mapped_column(
-        SQLAlchemyEnum(TransactionStatus), nullable=False
-    )
+    decision: Mapped[TransactionStatus] = mapped_column(SQLAlchemyEnum(TransactionStatus), nullable=False)
+    features_json: Mapped[dict] = mapped_column(JSON, nullable=False)
 
-    # Feature-Vektoren werden als JSON gespeichert, fürs Logging OK
-    features_json: Mapped[dict] = mapped_column(MySQLJSON, nullable=False)
-
-    # Zusammengesetzter Index aus timestamp und decision (Für späteres Dashboard)
     __table_args__ = (
         Index("ix_monitoring_ts_decision", "timestamp", "decision"),
     )
@@ -111,12 +99,6 @@ class DeadLetterQueue(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     task_name: Mapped[str] = mapped_column(String(255))
     event_id: Mapped[str] = mapped_column(String(255))
-
-    # Type-hinting JSON as a dict makes it easier to work with in tasks
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     error_msg: Mapped[str] = mapped_column(Text)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
