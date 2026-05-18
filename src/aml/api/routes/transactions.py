@@ -6,18 +6,18 @@ from sqlalchemy import select, desc, delete
 from sqlalchemy.orm import Session
 from celery import chain
 
-from src.models.schemas import (TransactionCreate,
+from aml.models.schemas import (TransactionCreate,
                                 TransactionStatusResponse,
                                 TransactionInternal,
                                 TransactionAcceptedResponse)
-from src.models.db_models import TransactionsState, DeadLetterQueue
-from src.services.database import get_db_session
-from src.utils.db_helpers import get_user_history, redis_client
-from src.config.settings import settings
-from src.tasks.persistence import run_persistence_task
-from src.tasks.enrichment import run_enrichment_task
-from src.tasks.inference import run_inference_task
-from src.celery_app import celery_app
+from aml.models.db_models import TransactionsState, DeadLetterQueue
+from aml.services.database import get_db_session
+from aml.utils.db_helpers import get_user_history, redis_client
+from aml.config.settings import settings
+from aml.tasks.persistence import run_persistence_task
+from aml.tasks.enrichment import run_enrichment_task
+from aml.tasks.inference import run_inference_task
+from aml.celery_app import celery_app
 
 
 router = APIRouter()

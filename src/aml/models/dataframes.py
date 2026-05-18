@@ -1,10 +1,10 @@
-import pandas as pd
-import pandera.pandas as pa
-from pandera.typing.pandas import Series
+import polars as pl
+import pandera.polars as pa
+from pandera.typing.polars import Series
 
 
 class HistoryDataFrameSchema(pa.DataFrameModel):
-    """Pandera schema to strictly validate and coerce historical transaction DataFrames."""
+    """Pandera schema to strictly validate and coerce historical transaction DataFrames in Polars."""
     step: Series[int] = pa.Field(ge=0)
     type: Series[str]
     amount: Series[float] = pa.Field(ge=0.0)
@@ -14,10 +14,9 @@ class HistoryDataFrameSchema(pa.DataFrameModel):
     nameDest: Series[str]
     oldbalanceDest: Series[float]
     newbalanceDest: Series[float]
-    timestamp: Series[pd.DatetimeTZDtype] = pa.Field(nullable=True)
+    timestamp: Series[pl.Datetime] = pa.Field(nullable=True)
 
     class Config:
-        # Coerce=True forces Pandas to automatically cast types (e.g., string to float) if the underlying data allows it.
         coerce = True
 
 
@@ -31,7 +30,7 @@ class EnrichedFeaturesSchema(pa.DataFrameModel):
     step: Series[int]
     nameOrig: Series[str]
     nameDest: Series[str]
-    timestamp: Series[pd.DatetimeTZDtype] = pa.Field(nullable=True)
+    timestamp: Series[pl.Datetime] = pa.Field(nullable=True)
 
     # Required Raw Features
     amount: Series[float]
@@ -43,7 +42,7 @@ class EnrichedFeaturesSchema(pa.DataFrameModel):
 
     # --- Sender Features ---
     sender_time_since_last_trans: Series[float]
-    sender_trans_count_5_steps: Series[float]  # Rolling counts return floats in Pandas
+    sender_trans_count_5_steps: Series[float]
     sender_total_trans_count: Series[int]
     sender_avg_trans_amount_10_steps: Series[float]
     sender_std_trans_amount_10_steps: Series[float]
@@ -67,5 +66,6 @@ class EnrichedFeaturesSchema(pa.DataFrameModel):
     pair_transaction_count: Series[int]
 
     class Config:
-        strict = True # Prevents any unexpected columns from sneaking in (Crashes then)
+        strict = True  # Prevents any unexpected columns from sneaking in
         coerce = True
+

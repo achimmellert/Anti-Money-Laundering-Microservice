@@ -1,7 +1,7 @@
 from typing import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from src.config.settings import settings
+from aml.config.settings import settings
 
 
 engine = create_engine(settings.DATABASE_URL.unicode_string(), pool_pre_ping=True, future=True)
@@ -20,6 +20,6 @@ def get_db_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    from src.models import db_models  # noqa: F401
-    from src.models.db_models import Base
+    from aml.models import db_models  # noqa: F401
+    from aml.models.db_models import Base
     Base.metadata.create_all(bind=engine)

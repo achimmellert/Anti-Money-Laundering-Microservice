@@ -3,7 +3,10 @@ PyTorch Model. Not used in production code yet.
 """
 
 import numpy as np
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 from sklearn.base import BaseEstimator, ClassifierMixin
 from pytorch_tabular import TabularModel
 from pytorch_tabular.config import DataConfig, OptimizerConfig, TrainerConfig
@@ -38,13 +41,20 @@ class SklearnPyTorchWrapper(BaseEstimator, ClassifierMixin):
 
     def _prepare_df(self, X, y=None):
         all_cols = self.continuous_cols + self.categorical_cols
-        if isinstance(X, np.ndarray):
+        if hasattr(X, "to_pandas"):
+            df = X.to_pandas()
+        elif isinstance(X, np.ndarray):
             df = pd.DataFrame(X, columns=all_cols)
         else:
             df = X.copy()
 
         if y is not None:
-            df[self.target_col] = y.values if isinstance(y, pd.Series) else y
+            if hasattr(y, "to_numpy"):
+                df[self.target_col] = y.to_numpy()
+            elif hasattr(y, "values"):
+                df[self.target_col] = y.values
+            else:
+                df[self.target_col] = y
         return df
 
     def fit(self, X, y, X_val=None, y_val=None):

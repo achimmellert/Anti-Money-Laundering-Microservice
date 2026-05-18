@@ -1,6 +1,6 @@
 from celery import Celery
 from celery.signals import worker_process_init
-from src.config.settings import settings
+from aml.config.settings import settings
 
 
 celery_app = Celery(
@@ -8,9 +8,9 @@ celery_app = Celery(
     broker=settings.REDIS_URL.unicode_string(),
     backend=settings.REDIS_URL.unicode_string(),
     include=[
-        "src.tasks.enrichment",
-        "src.tasks.inference",
-        "src.tasks.persistence"
+        "aml.tasks.enrichment",
+        "aml.tasks.inference",
+        "aml.tasks.persistence"
     ]
 )
 
@@ -24,15 +24,15 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_routes={
-        'src.tasks.enrichment.run_enrichment_task': {'queue': 'enrichment'},
-        'src.tasks.inference.run_inference_task': {'queue': 'inference'},
-        'src.tasks.inference.generate_shap_task': {'queue': 'inference'},
-        'src.tasks.persistence.run_persistence_task': {'queue': 'persistence'},
+        'aml.tasks.enrichment.run_enrichment_task': {'queue': 'enrichment'},
+        'aml.tasks.inference.run_inference_task': {'queue': 'inference'},
+        'aml.tasks.inference.generate_shap_task': {'queue': 'background'},
+        'aml.tasks.persistence.run_persistence_task': {'queue': 'persistence'},
     }
 )
 
 
 @worker_process_init.connect
 def init_worker_db_pool(**kwargs):
-    from src.services.database import engine
+    from aml.services.database import engine
     engine.dispose()

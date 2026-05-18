@@ -1,7 +1,7 @@
 import os
 from loguru import logger as log
 import numpy as np
-import pandas as pd
+import polars as pl
 import shap
 import xgboost as xgb
 from joblib import load as joblib_load
@@ -13,7 +13,7 @@ import matplotlib
 matplotlib.use('Agg')  # Force non-interactive, memory-safe backend
 import matplotlib.pyplot as plt
 
-from src.config.settings import settings
+from aml.config.settings import settings
 
 
 class FraudDetectionModel:
@@ -50,16 +50,16 @@ class FraudDetectionModel:
         # Initialize explainer once
         self.explainer = shap.TreeExplainer(self.model)
 
-    def _prepare_dmatrix(self, raw_features_df: pd.DataFrame) -> xgb.DMatrix:
+    def _prepare_dmatrix(self, raw_features_df: pl.DataFrame) -> tuple[xgb.DMatrix, np.ndarray]:
         """Helper to DRY up the transformation and validation logic."""
         X_trans = self.preproc.transform(raw_features_df)
         if X_trans.shape[1] != len(self.feature_names):
             raise ValueError(f"Column mismatch: X={X_trans.shape[1]} vs feature_names={len(self.feature_names)}")
 
-        # Pass the NumPy array (X_trans) directly instead of wrapping in Pandas
+        # Pass the NumPy array (X_trans) directly instead of wrapping in a DataFrame
         return xgb.DMatrix(X_trans, feature_names=self.feature_names), X_trans
 
-    def predict(self, raw_features_df: pd.DataFrame) -> tuple[float, int, str]:
+    def predict(self, raw_features_df: pl.DataFrame) -> tuple[float, int, str]:
         dmat, _ = self._prepare_dmatrix(raw_features_df)
         prob = float(self.model.predict(dmat)[0])
 
@@ -68,7 +68,7 @@ class FraudDetectionModel:
 
         return prob, is_fraud, decision
 
-    def predict_batch(self, raw_features_df: pd.DataFrame) -> list[tuple[float, int, str]]:
+    def predict_batch(self, raw_features_df: pl.DataFrame) -> list[tuple[float, int, str]]:
         dmat, _ = self._prepare_dmatrix(raw_features_df)
         probs = self.model.predict(dmat).astype(float)
 
@@ -79,11 +79,11 @@ class FraudDetectionModel:
             results.append((float(prob), is_fraud, decision))
         return results
 
-    def predict_proba(self, raw_features_df: pd.DataFrame) -> np.ndarray:
+    def predict_proba(self, raw_features_df: pl.DataFrame) -> np.ndarray:
         dmat, _ = self._prepare_dmatrix(raw_features_df)
         return self.model.predict(dmat).astype(float)
 
-    def save_shap_barplot(self, raw_features_df: pd.DataFrame, out_path: str):
+    def save_shap_barplot(self, raw_features_df: pl.DataFrame, out_path: str):
         _, X_trans = self._prepare_dmatrix(raw_features_df)
         shap_values = self.explainer.shap_values(X_trans)
 

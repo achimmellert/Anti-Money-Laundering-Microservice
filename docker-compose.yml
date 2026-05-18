@@ -16,15 +16,15 @@ services:
     ports:
       - "3307:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-aml_db}
+      MYSQL_USER: ${MYSQL_USER:-aml_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aml_secure_password}
     volumes:
       - mysql_data:/var/lib/mysql
     command: --default-authentication-plugin=mysql_native_password --log_bin_trust_function_creators=1
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-aml_user}", "-p${MYSQL_PASSWORD:-aml_secure_password}"]
       interval: 5s
       timeout: 5s
       retries: 60
@@ -36,9 +36,9 @@ services:
       - "8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      PYTHONPATH: /app
-      API_URL: ${API_URL}
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
+      PYTHONPATH: /app/src
+      API_URL: ${API_URL:-http://localhost:8000/api/v1}
     depends_on:
       redis:
         condition: service_healthy
@@ -46,8 +46,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
+    command: ["uvicorn", "aml.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
@@ -60,18 +59,18 @@ services:
     container_name: aml_persistence_worker
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      PYTHONPATH: /app
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
+      PYTHONPATH: /app/src
     depends_on:
       redis:
         condition: service_healthy
       mysql:
         condition: service_healthy
       fastapi-app:
-        condition: service_healthy # Will wait for FastAPI healthcheck
+        condition: service_healthy
     volumes:
       - .:/app
-    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
+    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
     restart: unless-stopped
 
   enrichment-worker:
@@ -79,18 +78,18 @@ services:
     container_name: aml_enrichment_worker
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      PYTHONPATH: /app
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
+      PYTHONPATH: /app/src
     depends_on:
       redis:
         condition: service_healthy
       mysql:
         condition: service_healthy
       fastapi-app:
-        condition: service_healthy # Will wait for FastAPI healthcheck
+        condition: service_healthy
     volumes:
       - .:/app
-    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
+    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
     restart: unless-stopped
 
   inference-worker:
@@ -98,19 +97,39 @@ services:
     container_name: aml_inference_worker
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      PYTHONPATH: /app
+      PYTHONPATH: /app/src
     depends_on:
       redis:
         condition: service_healthy
       mysql:
         condition: service_healthy
       fastapi-app:
-        condition: service_healthy # Will wait for FastAPI healthcheck
+        condition: service_healthy
     volumes:
       - .:/app
-    command: ["celery", "-A", "src.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4"]
+    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4"]
+    restart: unless-stopped
+
+  background-worker:
+    build: .
+    container_name: aml_background_worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PYTHONPATH: /app/src
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "background", "--loglevel=info", "--pool=threads", "--concurrency=2"]
     restart: unless-stopped
 
   mlflow:
@@ -119,13 +138,12 @@ services:
     ports:
       - "5000:5000"
     command: >
-      /bin/sh -c "pip install pymysql && mlflow server --backend-store-uri mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE} --artifacts-destination /mlflow_artifacts --serve-artifacts --host 0.0.0.0"
+      /bin/sh -c "pip install pymysql && mlflow server --backend-store-uri mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db} --artifacts-destination /mlflow_artifacts --serve-artifacts --host 0.0.0.0"
     volumes:
       - ./mlflow_artifacts:/mlflow_artifacts
     depends_on:
       mysql:
         condition: service_healthy
-
 
 volumes:
   mysql_data:

@@ -31,7 +31,7 @@ class TransactionType(Enum):
 class TransactionsState(Base):
     __tablename__ = "transactions_state"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(36), index=True, unique=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -48,7 +48,7 @@ class TransactionsState(Base):
 class SuspiciousTransactions(Base):
     __tablename__ = "suspicious_transactions"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -62,7 +62,7 @@ class SuspiciousTransactions(Base):
 class TransactionsHistory(Base):
     __tablename__ = "transaction_history"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     step: Mapped[int] = mapped_column(Integer, index=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False, index=True)
@@ -80,7 +80,7 @@ class TransactionsHistory(Base):
 class MonitoringInference(Base):
     __tablename__ = "monitoring_inference"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     y_pred_proba: Mapped[float] = mapped_column(Float, nullable=False)

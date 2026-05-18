@@ -1,16 +1,30 @@
-import pandas as pd
-import pandera.pandas as pa
+import polars as pl
+import pandera.polars as pa
 from loguru import logger as log
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.celery_app import celery_app
-from src.services.database import SessionLocal
-from src.models.schemas import TransactionInternal
-from src.models.dataframes import HistoryDataFrameSchema, EnrichedFeaturesSchema
-from src.services.feature_engineering import create_features, infer_missing_balances
-from src.utils.db_helpers import get_account_history, save_to_dlq
-from src.config.settings import settings
+from aml.celery_app import celery_app
+from aml.services.database import SessionLocal
+from aml.models.schemas import TransactionInternal
+from aml.models.dataframes import HistoryDataFrameSchema, EnrichedFeaturesSchema
+from aml.services.feature_engineering import create_features, infer_missing_balances
+from aml.utils.db_helpers import get_account_history, save_to_dlq
+from aml.config.settings import settings
+
+
+HIST_SCHEMA = {
+    "step": pl.Int64,
+    "type": pl.String,
+    "amount": pl.Float64,
+    "nameOrig": pl.String,
+    "oldbalanceOrg": pl.Float64,
+    "newbalanceOrig": pl.Float64,
+    "nameDest": pl.String,
+    "oldbalanceDest": pl.Float64,
+    "newbalanceDest": pl.Float64,
+    "timestamp": pl.Datetime,
+}
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -29,7 +43,6 @@ def run_enrichment_task(self, data: dict, event_id: str):
         save_to_dlq("enchrichment_validation", event_id, data, str(e))
         return
 
-
     with SessionLocal() as session:
         try:
             # 2. High-Speed History Retrieval (List of msgspec Structs)
@@ -44,27 +57,27 @@ def run_enrichment_task(self, data: dict, event_id: str):
             if rows:
                 rows_data = [
                     {
-                        "step": r.step, "type": r.type, "amount": r.amount,
-                        "nameOrig": r.nameOrig, "oldbalanceOrg": r.oldbalanceOrg, "newbalanceOrig": r.newbalanceOrig,
-                        "nameDest": r.nameDest, "oldbalanceDest": r.oldbalanceDest, "newbalanceDest": r.newbalanceDest,
+                        "step": r.step, "type": r.type, "amount": float(r.amount),
+                        "nameOrig": r.nameOrig, "oldbalanceOrg": float(r.oldbalanceOrg), "newbalanceOrig": float(r.newbalanceOrig),
+                        "nameDest": r.nameDest, "oldbalanceDest": float(r.oldbalanceDest), "newbalanceDest": float(r.newbalanceDest),
                         "timestamp": r.timestamp
                     } for r in rows]
 
-                hist_df = pd.DataFrame.from_records(rows_data)
+                hist_df = pl.DataFrame(rows_data, schema=HIST_SCHEMA)
                 hist_df = (
-                    hist_df.drop_duplicates(keep="last")
-                    .sort_values("step", ascending=False)
-                    .reset_index(drop=True)
+                    hist_df.unique(maintain_order=True)
+                    .sort("step", descending=True)
                 )
 
             else:
                 log.info(f"New User context: No history for {current_tx.nameOrig} or {current_tx.nameDest}.")
                 # Generate empty DataFrame with exact required columns
-                hist_df = pd.DataFrame(columns=list(HistoryDataFrameSchema.to_schema().columns.keys()))
+                hist_df = pl.DataFrame(schema=HIST_SCHEMA)
 
             # 4. Construct Current Transaction DataFrame (Pydantic already guaranteed types)
-            cur_dict = current_tx.model_dump(exclude={"event_id"})
-            cur_df = pd.DataFrame([cur_dict])
+            cur_dict = current_tx.model_dump(mode="python", exclude={"event_id"})
+            cur_dict["type"] = cur_dict["type"].value if hasattr(cur_dict["type"], "value") else str(cur_dict["type"])
+            cur_df = pl.DataFrame([cur_dict], schema=HIST_SCHEMA)
 
             # 5. Pandera Validation
             cur_df = HistoryDataFrameSchema.validate(cur_df)
@@ -72,18 +85,18 @@ def run_enrichment_task(self, data: dict, event_id: str):
 
             # 6. Feature Engineering Pipeline
             cur_df_imputed = infer_missing_balances(cur_df, hist_df)
-            full_df = pd.concat([hist_df, cur_df_imputed], ignore_index=True)
+            full_df = pl.concat([hist_df, cur_df_imputed])
             feat_df = create_features(full_df)
 
             # 7. Extract the newly enriched row for the Chain
-            enriched_row = feat_df.iloc[[-1]].copy()
+            enriched_data = feat_df.to_dicts()[-1]
 
             # Serialize datetimes back to strings for JSON/Celery transmission
-            export_cols = settings.RAW_FEATURE_COLUMNS + ["step", "nameOrig", "nameDest", "timestamp"]
-            enriched_data = enriched_row[export_cols].iloc[0].to_dict()
-
-            if pd.notna(enriched_data.get("timestamp")):
-                enriched_data["timestamp"] = enriched_data["timestamp"].isoformat()
+            if enriched_data.get("timestamp") is not None:
+                if hasattr(enriched_data["timestamp"], "isoformat"):
+                    enriched_data["timestamp"] = enriched_data["timestamp"].isoformat()
+                else:
+                    enriched_data["timestamp"] = str(enriched_data["timestamp"])
 
             enriched_data["event_id"] = event_id
 

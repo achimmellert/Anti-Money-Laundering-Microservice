@@ -1,13 +1,13 @@
 from loguru import logger as log
-from src.celery_app import celery_app
-from src.models.db_models import TransactionStatus
-from src.services.database import SessionLocal
-from src.utils.db_helpers import (
+from aml.celery_app import celery_app
+from aml.models.db_models import TransactionStatus
+from aml.services.database import SessionLocal
+from aml.utils.db_helpers import (
     update_transaction_state,
     save_history_transaction,
     save_to_dlq
 )
-from src.models.schemas import TransactionInternal
+from aml.models.schemas import TransactionInternal
 
 
 @celery_app.task(bind=True, max_retries=3)

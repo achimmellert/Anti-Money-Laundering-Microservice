@@ -2,7 +2,7 @@ from loguru import logger as log
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
-from src.services.database import init_db
+from aml.services.database import init_db
 
 
 @asynccontextmanager

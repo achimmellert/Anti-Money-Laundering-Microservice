@@ -6,15 +6,15 @@ from typing import List, Optional, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, select
 
-from src.models.db_models import (TransactionsHistory,
+from aml.models.db_models import (TransactionsHistory,
                                   TransactionsState,
                                   TransactionStatus,
                                   SuspiciousTransactions,
                                   DeadLetterQueue)
-from src.models.schemas import TransactionInternal
-from src.models.structs import HistoryStruct, HISTORY_DECODER, HISTORY_ENCODER
-from src.services.database import SessionLocal
-from src.config.settings import settings
+from aml.models.schemas import TransactionInternal
+from aml.models.structs import HistoryStruct, HISTORY_DECODER, HISTORY_ENCODER
+from aml.services.database import SessionLocal
+from aml.config.settings import settings
 
 
 redis_client = redis.Redis.from_url(settings.REDIS_URL.unicode_string(), decode_responses=False)
@@ -45,13 +45,18 @@ def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Hist
     if not rows:
         return []
 
-    # 3. Map to Structs FIRST to guarantee consistent return types
     structs = [
         HistoryStruct(
-            step=r.step, type=r.type, amount=float(r.amount),
-            nameOrig=r.nameOrig, nameDest=r.nameDest,
+            step=r.step,
+            type=r.type.value if hasattr(r.type, "value") else str(r.type),
+            amount=float(r.amount),
+            nameOrig=r.nameOrig,
+            nameDest=r.nameDest,
             oldbalanceOrg=float(r.oldbalanceOrg or 0),
             newbalanceOrig=float(r.newbalanceOrig or 0),
+            oldbalanceDest=float(r.oldbalanceDest or 0),
+            newbalanceDest=float(r.newbalanceDest or 0),
+            event_id=str(r.event_id) if r.event_id else None,
             timestamp=r.timestamp
         ) for r in rows
     ]
@@ -109,9 +114,11 @@ def update_transaction_state(session: Session,
         session.add(ts_row)
 
     if ts_row:
-        # Prevent PENDING from overwriting a finished state safely
-        if status == TransactionStatus.PENDING and ts_row.status in [TransactionStatus.SUCCESS,
-                                                                     TransactionStatus.BLOCKED]:
+        # Prevent PENDING or PERSISTED from overwriting a finished decision (SUCCESS / BLOCKED)
+        if status in [TransactionStatus.PENDING, TransactionStatus.PERSISTED] and ts_row.status in [
+            TransactionStatus.SUCCESS,
+            TransactionStatus.BLOCKED
+        ]:
             return
 
         ts_row.status = status
@@ -125,7 +132,7 @@ def update_transaction_state(session: Session,
 def save_history_transaction(session: Session, payload: TransactionInternal):
     """Saves to SQL and updates the sliding-window cache in Redis."""
     hist = TransactionsHistory(
-        event_id=payload.event_id,
+        event_id=str(payload.event_id),
         step=payload.step,
         type=payload.type,
         amount=payload.amount,

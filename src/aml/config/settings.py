@@ -4,13 +4,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import MySQLDsn, RedisDsn
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
+    PROJECT_ROOT: Path = PROJECT_ROOT
+
     # --- INFRASTRUCTURE SECRETS
-    REDIS_URL: RedisDsn
-    DATABASE_URL: MySQLDsn
+    REDIS_URL: RedisDsn = "redis://localhost:6379/0"  # type: ignore
+    DATABASE_URL: MySQLDsn = "mysql+pymysql://root:root@localhost:3306/aml"  # type: ignore
 
     # --- CONFIGURATIONS ---
     START_STEP: int = 743
@@ -40,7 +42,7 @@ class Settings(BaseSettings):
     MLFLOW_TRACKING_URI: str = "http://localhost:5000"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(PROJECT_ROOT / ".env"), ".env"),
         env_file_encoding="utf-8",
         extra="ignore"             # Ignores random environment variables not listed in this class
     )

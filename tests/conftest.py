@@ -1,10 +1,14 @@
+import os
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/aml")
+
 import pytest
-import pandera.pandas as pa
-import pandas as pd
-from src.config.settings import settings
+import pandera.polars as pa
+import polars as pl
+from aml.config.settings import settings
 
 
-# 1. Define the statistical rules for your AML data
+# 1. Define the statistical rules for your AML data in Polars
 aml_schema = pa.DataFrameSchema({
     "type": pa.Column(str, pa.Check.isin(["TRANSFER", "CASH_OUT", "CASH_IN", "PAYMENT", "DEBIT"])),
     "amount": pa.Column(float, pa.Check.ge(0)),
@@ -12,19 +16,35 @@ aml_schema = pa.DataFrameSchema({
     "newbalanceOrig": pa.Column(float, pa.Check.ge(0)),
     "oldbalanceDest": pa.Column(float, pa.Check.ge(0)),
     "newbalanceDest": pa.Column(float, pa.Check.ge(0)),
-    # Assuming other numeric columns default to float for the ML model
     **{col: pa.Column(float) for col in settings.NUMERIC_FEATURES if col not in [
         "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"
     ]}
 })
 
-@pytest.fixture
-def mock_input_df() -> pd.DataFrame:
-    """Generates 5 rows of perfectly valid synthetic AML data on the fly."""
-    # pandera's example() creates synthetic data matching the rules above
-    return aml_schema.example(size=5)
 
 @pytest.fixture
-def mock_invalid_df(mock_input_df) -> pd.DataFrame:
+def mock_input_df() -> pl.DataFrame:
+    """Generates 5 rows of valid synthetic AML data in Polars on the fly."""
+    types = ["TRANSFER", "CASH_OUT", "CASH_IN", "PAYMENT", "DEBIT"]
+    rows = []
+    for i in range(5):
+        row = {
+            "type": types[i % len(types)],
+            "amount": float(100.0 * (i + 1)),
+            "oldbalanceOrg": 500.0,
+            "newbalanceOrig": 400.0,
+            "oldbalanceDest": 50.0,
+            "newbalanceDest": 150.0,
+        }
+        for col in settings.NUMERIC_FEATURES:
+            if col not in row:
+                row[col] = 1.0
+        rows.append(row)
+    df = pl.DataFrame(rows)
+    return aml_schema.validate(df)
+
+
+@pytest.fixture
+def mock_invalid_df(mock_input_df) -> pl.DataFrame:
     """Generates data missing a critical column to test error handling."""
-    return mock_input_df.drop(columns=["amount"])
+    return mock_input_df.drop("amount")

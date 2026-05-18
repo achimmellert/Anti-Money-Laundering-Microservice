@@ -7,10 +7,10 @@ import os
 from datetime import datetime
 
 
-API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1")
+from aml.config.settings import settings
 
-CURRENT_FILE = Path(__file__).resolve()
-BASE_DIR = CURRENT_FILE.parents[2]
+API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1")
+BASE_DIR = settings.PROJECT_ROOT
 CSV_PATH = BASE_DIR / "data" / "test.csv"
 
 http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500, max_keepalive_connections=100))

@@ -1,22 +1,23 @@
 from loguru import logger as log
 from datetime import datetime, timezone
-import pandas as pd
+import polars as pl
+from sqlalchemy import insert
 from sqlalchemy.exc import SQLAlchemyError
 from celery_batches import Batches
 from celery.signals import worker_process_init
 from pydantic import ValidationError
 
-from src.celery_app import celery_app
-from src.services.database import SessionLocal
-from src.services.inference import FraudDetectionModel
-from src.utils.db_helpers import (
+from aml.celery_app import celery_app
+from aml.services.database import SessionLocal
+from aml.services.inference import FraudDetectionModel
+from aml.utils.db_helpers import (
     update_transaction_state,
     save_suspicious_transaction,
     save_to_dlq
 )
-from src.config.settings import settings
-from src.models.db_models import MonitoringInference
-from src.models.schemas import TransactionInternal
+from aml.config.settings import settings
+from aml.models.db_models import MonitoringInference
+from aml.models.schemas import TransactionInternal
 
 
 # Global placeholder for the ML Model
@@ -68,8 +69,9 @@ def run_inference_task(self, requests):
         # mode="json" ensures Enums, UUIDs, and datetimes are serialized to strings safely
         valid_data = payload.model_dump(mode="json")
 
-        row = {col: float(valid_data.get(col, 0.0)) for col in settings.NUMERIC_FEATURES}
-        row["type"] = payload.type.value  # Safe Enum access
+        # Extract features from validated payload, falling back to data_dict
+        row = {col: float(valid_data.get(col, data_dict.get(col, 0.0))) for col in settings.NUMERIC_FEATURES}
+        row["type"] = payload.type.value if hasattr(payload.type, "value") else str(payload.type)
 
         rows.append(row)
 
@@ -80,7 +82,7 @@ def run_inference_task(self, requests):
         return
 
     # Vectorized Prediction
-    X_raw = pd.DataFrame(rows, columns=settings.RAW_FEATURE_COLUMNS)
+    X_raw = pl.DataFrame(rows).select(settings.RAW_FEATURE_COLUMNS)
     try:
         results = model_service.predict_batch(X_raw)
     except Exception as e:
@@ -108,7 +110,7 @@ def run_inference_task(self, requests):
                     save_suspicious_transaction(session, payload, event_id, str(plot_path))
 
                     # Offload SHAP (Async)
-                    row_dict = X_raw.iloc[i].to_dict()
+                    row_dict = X_raw.to_dicts()[i]
                     generate_shap_task.delay(row_dict, event_id, str(plot_path))
 
                 # Prepare Bulk Monitoring
@@ -117,12 +119,12 @@ def run_inference_task(self, requests):
                     "timestamp": datetime.now(timezone.utc),
                     "y_pred_proba": float(prob),
                     "decision": decision,
-                    "features_json": {k: valid_data.get(k) for k in settings.RAW_FEATURE_COLUMNS if k in valid_data}
+                    "features_json": {k: valid_data.get(k, data_dict.get(k)) for k in settings.RAW_FEATURE_COLUMNS if k in valid_data or k in data_dict}
                 })
 
-            # Final Batch Commit
+            # Final Batch Commit using SQLAlchemy 2.0 insert
             if monitoring_entries:
-                session.bulk_insert_mappings(MonitoringInference, monitoring_entries)
+                session.execute(insert(MonitoringInference), monitoring_entries)
 
             session.commit()
             log.info(f"Batch processed: {len(events)} events.")
@@ -145,6 +147,8 @@ def generate_shap_task(row_dict: dict, event_id: str, plot_path: str):
         model_service = FraudDetectionModel()
 
     try:
-        model_service.save_shap_barplot(pd.DataFrame([row_dict]), plot_path)
+        log.info(f"Generating SHAP visualization for Event: {event_id} -> {plot_path}")
+        model_service.save_shap_barplot(pl.DataFrame([row_dict]), plot_path)
+        log.info(f"SHAP report generated successfully for Event: {event_id}")
     except Exception as e:
         log.error(f"SHAP Task failed for {event_id}: {e}")

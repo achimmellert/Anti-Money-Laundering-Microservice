@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field, ConfigDict, UUID4
 from datetime import datetime, timezone
 from typing import Literal, Optional
-from src.models.db_models import TransactionType, TransactionStatus
+from aml.models.db_models import TransactionType, TransactionStatus
 
 
 # --- SHARED API LAYER ---
@@ -34,6 +34,8 @@ class TransactionInternal(TransactionCreate):
     newbalanceOrig: float = 0.0
     oldbalanceDest: float = 0.0
     newbalanceDest: float = 0.0
+
+    model_config = ConfigDict(extra="allow")
 
 
 # --- PUBLIC API RESPONSES ---

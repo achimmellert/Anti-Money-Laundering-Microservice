@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import pandas as pd
+import polars as pl
 import logging
 import warnings
 import optuna
@@ -16,7 +16,7 @@ from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from optuna.integration import XGBoostPruningCallback
 
-from src.services.model_wrappers import SklearnPyTorchWrapper
+from aml.services.model_wrappers import SklearnPyTorchWrapper
 
 
 warnings.filterwarnings("ignore")
@@ -31,69 +31,87 @@ MLFLOW_URI = "http://localhost:5000"
 
 
 # === 1. OPTIMIZED FEATURE ENGINEERING ===
-def _get_threshold(ser: pd.Series, factor: float = 1.5):
-    Q1 = ser.quantile(0.25)
-    Q3 = ser.quantile(0.75)
-    IQR = Q3 - Q1
-    return Q3 + factor * IQR
+def _get_threshold(ser: pl.Series, factor: float = 1.5) -> float:
+    """Calculates upper threshold based on IQR."""
+    clean = ser.drop_nulls().drop_nans()
+    if clean.len() == 0:
+        return 0.0
+    q1 = clean.quantile(0.25, interpolation="linear")
+    q3 = clean.quantile(0.75, interpolation="linear")
+    if q1 is None or q3 is None:
+        return 0.0
+    iqr = q3 - q1
+    return float(q3 + factor * iqr)
 
 
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
-    log.info("Starting optimized Feature Engineering...")
-    df = df.copy()
+def create_features(df: pl.DataFrame) -> pl.DataFrame:
+    log.info("Starting optimized Feature Engineering with Polars...")
 
     # --- SENDER FEATURES ---
-    df = df.sort_values(by=["nameOrig", "step"]).reset_index(drop=True)
-    sender_groups = df.groupby("nameOrig")
+    df = df.sort(["nameOrig", "step"])
 
-    df["sender_time_since_last_trans"] = sender_groups["step"].diff().fillna(0)
-    df["sender_total_trans_count"] = sender_groups.cumcount()
+    hist_avg_expr = pl.col("amount").cum_sum().shift(1) / pl.int_range(0, pl.len()).cast(pl.Float64)
 
-    rolling_amount_10 = sender_groups["amount"].rolling(window=10, min_periods=1)
-    df["sender_avg_trans_amount_10_steps"] = rolling_amount_10.mean().reset_index(level=0, drop=True)
-    df["sender_std_trans_amount_10_steps"] = rolling_amount_10.std().reset_index(level=0, drop=True).fillna(0.0)
-    df["sender_std_trans_amount_10_steps_was_na"] = (df["sender_std_trans_amount_10_steps"] == 0.0).astype(int)
+    df = df.with_columns(
+        sender_time_since_last_trans=pl.col("step").diff().fill_null(0).cast(pl.Float64).over("nameOrig"),
+        sender_total_trans_count=pl.int_range(0, pl.len()).cast(pl.Int64).over("nameOrig"),
+        sender_avg_trans_amount_10_steps=pl.col("amount").rolling_mean(window_size=10, min_samples=1).over("nameOrig"),
+        sender_std_trans_amount_10_steps=pl.col("amount").rolling_std(window_size=10, min_samples=1).fill_null(0.0).over("nameOrig"),
+        _hist_avg=hist_avg_expr.over("nameOrig"),
+        sender_fraction_of_balance=pl.col("amount") / (pl.col("oldbalanceOrg") + 1e-5),
+        sender_emptied_account=pl.when(pl.col("newbalanceOrig") <= 0.01).then(1).otherwise(0),
+    )
 
-    df["sender_cum_sum"] = sender_groups["amount"].cumsum()
-    historical_avg = (df["sender_cum_sum"] - df["amount"]) / df["sender_total_trans_count"].replace(0, np.nan)
-    historical_avg_upper = _get_threshold(historical_avg)
+    df = df.with_columns(
+        sender_std_trans_amount_10_steps_was_na=pl.when(pl.col("sender_std_trans_amount_10_steps") == 0.0).then(1).otherwise(0)
+    )
 
-    df["sender_total_avg_ratio_extreme_values"] = (
-            (historical_avg == np.inf) | (historical_avg == -np.inf) |
-            (historical_avg >= historical_avg_upper) | (historical_avg.isna())
-    ).astype(int)
+    hist_avg_upper = _get_threshold(df["_hist_avg"])
 
-    s_clean_sender_ratio = (df["amount"] / historical_avg).replace([np.inf, -np.inf], np.nan).fillna(0)
-    ratio_upper = _get_threshold(s_clean_sender_ratio)
-    df["sender_total_avg_ratio_log1p"] = np.log1p(s_clean_sender_ratio.clip(lower=0, upper=ratio_upper))
+    s_clean_ratio_expr = pl.when(
+        pl.col("_hist_avg").is_null() | pl.col("_hist_avg").is_infinite() | pl.col("_hist_avg").is_nan() | (pl.col("_hist_avg") == 0)
+    ).then(0.0).otherwise(pl.col("amount") / pl.col("_hist_avg"))
 
-    df["sender_fraction_of_balance"] = df["amount"] / (df["oldbalanceOrg"] + 1e-5)
+    df = df.with_columns(
+        sender_total_avg_ratio_extreme_values=pl.when(
+            pl.col("_hist_avg").is_null() | pl.col("_hist_avg").is_infinite() | pl.col("_hist_avg").is_nan() | (pl.col("_hist_avg") >= hist_avg_upper)
+        ).then(1).otherwise(0),
+        _s_clean_ratio=s_clean_ratio_expr,
+    )
+
+    ratio_upper = _get_threshold(df["_s_clean_ratio"])
     frac_upper = _get_threshold(df["sender_fraction_of_balance"])
 
-    s_clean_frac = df["sender_fraction_of_balance"].replace([np.inf, -np.inf], np.nan).fillna(999).clip(lower=0,
-                                                                                                        upper=frac_upper)
-    df["sender_fraction_of_balance"] = np.log1p(s_clean_frac)
-    df["sender_emptied_account"] = (df["newbalanceOrig"] <= 0.01).astype(int)
+    s_clean_frac_expr = pl.when(
+        pl.col("sender_fraction_of_balance").is_null() | pl.col("sender_fraction_of_balance").is_infinite() | pl.col("sender_fraction_of_balance").is_nan()
+    ).then(999.0).otherwise(pl.col("sender_fraction_of_balance")).clip(0.0, frac_upper)
+
+    df = df.with_columns(
+        sender_total_avg_ratio_log1p=pl.col("_s_clean_ratio").clip(0.0, ratio_upper).log1p(),
+        sender_fraction_of_balance=s_clean_frac_expr.log1p(),
+    ).drop(["_hist_avg", "_s_clean_ratio"])
 
     # --- RECEIVER FEATURES ---
-    df = df.sort_values(by=["nameDest", "step"]).reset_index(drop=True)
-    receiver_groups = df.groupby("nameDest")
+    df = df.sort(["nameDest", "step"])
+    rec_hist_avg_expr = pl.col("amount").cum_sum().shift(1) / pl.int_range(0, pl.len()).cast(pl.Float64)
 
-    df["receiver_trans_count_5_steps"] = receiver_groups["amount"].rolling(window=5, min_periods=1).count().reset_index(
-        level=0, drop=True)
-    df["receiver_total_amount_5_steps"] = receiver_groups["amount"].rolling(window=5, min_periods=1).sum().reset_index(
-        level=0, drop=True)
+    df = df.with_columns(
+        receiver_trans_count_5_steps=pl.col("amount").is_not_null().cast(pl.Float64).rolling_sum(window_size=5, min_samples=1).over("nameDest"),
+        receiver_total_amount_5_steps=pl.col("amount").rolling_sum(window_size=5, min_samples=1).over("nameDest"),
+        _rec_hist_avg=rec_hist_avg_expr.over("nameDest"),
+    )
 
-    df["receiver_cum_count"] = receiver_groups.cumcount()
-    df["receiver_cum_sum"] = receiver_groups["amount"].cumsum()
-    receiver_hist_avg = (df["receiver_cum_sum"] - df["amount"]) / df["receiver_cum_count"].replace(0, np.nan)
+    s_clean_rec_expr = pl.when(
+        pl.col("_rec_hist_avg").is_null() | pl.col("_rec_hist_avg").is_infinite() | pl.col("_rec_hist_avg").is_nan()
+    ).then(0.0).otherwise(pl.col("amount") / (pl.col("_rec_hist_avg") + 1e-5))
 
-    s_clean_receiver = (df["amount"] / (receiver_hist_avg + 1e-5)).replace([np.inf, -np.inf], np.nan).fillna(0)
-    rec_ratio_upper = _get_threshold(s_clean_receiver)
-    df["receiver_amount_to_avg_ratio_log1p"] = np.log1p(s_clean_receiver.clip(lower=0, upper=rec_ratio_upper))
-    df["pair_transaction_count"] = df.groupby(["nameOrig", "nameDest"]).cumcount()
+    df = df.with_columns(_s_clean_rec=s_clean_rec_expr)
+    rec_ratio_upper = _get_threshold(df["_s_clean_rec"])
 
-    df = df.drop(columns=["sender_cum_sum", "receiver_cum_count", "receiver_cum_sum"])
+    df = df.with_columns(
+        receiver_amount_to_avg_ratio_log1p=pl.col("_s_clean_rec").clip(0.0, rec_ratio_upper).log1p(),
+        pair_transaction_count=pl.int_range(0, pl.len()).cast(pl.Int64).over(["nameOrig", "nameDest"]),
+    ).drop(["_rec_hist_avg", "_s_clean_rec"])
 
     log.info("Feature Engineering completed.")
     return df
@@ -108,15 +126,18 @@ def main():
         return
 
     # Load and process features
-    df_raw = pd.read_csv(DATA_PATH)
+    log.info("Loading raw data...")
+    df_raw = pl.read_csv(DATA_PATH)
     df = create_features(df_raw)
 
     drop_cols = ["step", "nameOrig", "nameDest", "timestamp", "isFlaggedFraud"]
-    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+    df = df.drop([c for c in drop_cols if c in df.columns])
 
-    df["type"] = OrdinalEncoder().fit_transform(df[["type"]]).astype(int)
+    df = df.with_columns(
+        type=pl.Series(OrdinalEncoder().fit_transform(df.select("type").to_numpy()).ravel()).cast(pl.Int64)
+    )
 
-    X = df.drop(columns=["isFraud"])
+    X = df.drop("isFraud")
     y = df["isFraud"]
 
     categorical_cols = ["type"]

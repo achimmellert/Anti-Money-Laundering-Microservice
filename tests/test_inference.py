@@ -1,10 +1,10 @@
 import pytest
 import numpy as np
-import pandas as pd
+import polars as pl
 from unittest.mock import patch, MagicMock
 
-from src.services.inference import FraudDetectionModel
-from src.config.settings import settings
+from aml.services.inference import FraudDetectionModel
+from aml.config.settings import settings
 
 
 @pytest.fixture

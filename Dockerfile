@@ -1,18 +1,25 @@
 FROM python:3.11-slim
 
+# Install uv from official binary image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 WORKDIR /app
 
-# Systemlibs für numpy/pandas/scikit/xgboost/shap
+# System libraries for C/C++ extensions & OpenMP (XGBoost, SHAP, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc g++ \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install locked dependencies into system Python using uv.lock (cached layer)
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-hashes -o /tmp/requirements.lock.txt && \
+    uv pip install --system --no-cache -r /tmp/requirements.lock.txt && \
+    rm /tmp/requirements.lock.txt
 
+# Copy application source code and install aml package in editable mode
 COPY . .
+RUN uv pip install --system --no-cache -e .
 
 EXPOSE 8000
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "aml.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

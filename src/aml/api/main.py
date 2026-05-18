@@ -2,8 +2,8 @@ import os
 from pathlib import Path
 from fastapi import FastAPI
 
-from src.api.lifespan import lifespan
-from src.api.routes.transactions import router as transaction_router
+from aml.api.lifespan import lifespan
+from aml.api.routes.transactions import router as transaction_router
 
 
 LOG_PATH = os.getenv("API_LOG_PATH", "logs/api_events.log")
