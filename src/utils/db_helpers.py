@@ -1,163 +1,187 @@
-# src/utils/db_helpers.py
-
 import redis
 import msgspec
-import logging
+from loguru import logger as log
 from datetime import datetime, timezone
 from typing import List, Optional, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, or_
+from sqlalchemy import desc, or_, select
 
-from src.models.db_models import TransactionsHistory, TransactionsState, SuspiciousTransactions, DeadLetterQueue
+from src.models.db_models import (TransactionsHistory,
+                                  TransactionsState,
+                                  TransactionStatus,
+                                  SuspiciousTransactions,
+                                  DeadLetterQueue)
+from src.models.schemas import TransactionInternal
 from src.models.structs import HistoryStruct, HISTORY_DECODER, HISTORY_ENCODER
 from src.services.database import SessionLocal
 from src.config.settings import settings
 
-log = logging.getLogger(__name__)
-# Change to this:
+
 redis_client = redis.Redis.from_url(settings.REDIS_URL.unicode_string(), decode_responses=False)
 
 
 # --- INTERNAL HELPERS ---
 
-def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Any]:
+def _get_cached_history(session: Session, user_id: str, limit: int) -> List[HistoryStruct]:
     """Tries Redis first, falls back to SQL, and ensures consistent return types."""
-    if not user_id: return []
     key = f"hist:{user_id}"
 
     # 1. Redis Look-up
     try:
         raw_data = redis_client.lrange(key, 0, limit - 1)
         if raw_data:
-            # Decode into list of structs
             return HISTORY_DECODER.decode(b"[" + b",".join(raw_data) + b"]")
     except Exception as e:
         log.warning(f"Redis Read Error for {user_id}: {e}")
 
     # 2. SQL Fallback
-    rows = session.query(TransactionsHistory).filter(
-        or_(TransactionsHistory.nameOrig == user_id, TransactionsHistory.nameDest == user_id)
-    ).order_by(desc(TransactionsHistory.step)).limit(limit).all()
+    stmt = (
+        select(TransactionsHistory)
+        .where(or_(TransactionsHistory.nameOrig == user_id, TransactionsHistory.nameDest == user_id))
+        .order_by(desc(TransactionsHistory.step)).limit(limit)
+    )
+    rows = session.execute(stmt).scalars().all()
 
-    # 3. Cache Hydration
-    if rows:
-        try:
-            # We convert to structs for consistent caching and returning
-            structs = [
-                HistoryStruct(
-                    step=r.step, type=r.type, amount=float(r.amount),
-                    nameOrig=r.nameOrig, nameDest=r.nameDest,
-                    oldbalanceOrg=float(r.oldbalanceOrg or 0),
-                    newbalanceOrig=float(r.newbalanceOrig or 0),
-                    timestamp=r.timestamp
-                ) for r in rows
-            ]
-            with redis_client.pipeline() as pipe:
-                pipe.delete(key)
-                for s in structs:
-                    pipe.rpush(key, HISTORY_ENCODER.encode(s))
-                pipe.expire(key, 3600)
-                pipe.execute()
-            return structs
-        except Exception as e:
-            log.warning(f"Redis Hydration Error: {e}")
+    if not rows:
+        return []
 
-    return rows
+    # 3. Map to Structs FIRST to guarantee consistent return types
+    structs = [
+        HistoryStruct(
+            step=r.step, type=r.type, amount=float(r.amount),
+            nameOrig=r.nameOrig, nameDest=r.nameDest,
+            oldbalanceOrg=float(r.oldbalanceOrg or 0),
+            newbalanceOrig=float(r.newbalanceOrig or 0),
+            timestamp=r.timestamp
+        ) for r in rows
+    ]
+
+    # 4. Cache Hydration
+    try:
+        encoded_structs = [HISTORY_ENCODER.encode(s) for s in structs]
+        with redis_client.pipeline() as pipe:
+            pipe.delete(key)
+            if encoded_structs:
+                pipe.rpush(key, *encoded_structs)
+            pipe.expire(key, 3600)
+            pipe.execute()
+    except Exception as e:
+        log.warning(f"Redis Hydration Error: {e}")
+
+    return structs
 
 
 # --- PUBLIC API ---
 
-def get_account_history(session: Session, nameOrig: str, nameDest: str, limit: int = 200):
+def get_account_history(session: Session, nameOrig: str, nameDest: str, limit: int = 200) -> List[HistoryStruct]:
     sender_rows = _get_cached_history(session, nameOrig, limit)
     receiver_rows = _get_cached_history(session, nameDest, limit)
     return list(sender_rows) + list(receiver_rows)
 
 
-def get_user_history(session: Session, user_id: str, limit: int = 100):
+def get_user_history(session: Session, user_id: str, limit: int = 100) -> List[HistoryStruct]:
     return _get_cached_history(session, user_id, limit)
 
 
-def update_transaction_state(session: Session, event_id: str, status: str, prob: float, payload: dict | None = None):
-    ts_row = session.query(TransactionsState).filter_by(event_id=event_id).first()
+def update_transaction_state(session: Session,
+                             event_id: str,
+                             status: TransactionStatus | str,
+                             prob: float | None,
+                             payload: TransactionInternal | None = None
+                             ):
+    # Safe Enum Coercion
+    if isinstance(status, str):
+        status = TransactionStatus(status)
+
+    stmt = select(TransactionsState).where(TransactionsState.event_id == event_id).with_for_update()
+    ts_row = session.execute(stmt).scalar_one_or_none()
 
     if ts_row is None and payload:
         ts_row = TransactionsState(
             event_id=event_id,
-            type=payload.get("type"),
-            amount=float(payload.get("amount", 0.0)),
-            nameOrig=payload.get("nameOrig"),
-            nameDest=payload.get("nameDest"),
-            step=int(payload.get("step", 0)),
-            timestamp=datetime.fromisoformat(payload["timestamp"]) if payload.get("timestamp") else None,
+            type=payload.type,
+            amount=payload.amount,
+            nameOrig=payload.nameOrig,
+            nameDest=payload.nameDest,
+            step=payload.step,
+            timestamp=payload.timestamp,
         )
         session.add(ts_row)
 
     if ts_row:
-        # Race-Condition Fix: Don't let PENDING overwrite a finished state
-        if status == "PENDING" and ts_row.status in ["SUCCESS", "BLOCKED"]:
+        # Prevent PENDING from overwriting a finished state safely
+        if status == TransactionStatus.PENDING and ts_row.status in [TransactionStatus.SUCCESS,
+                                                                     TransactionStatus.BLOCKED]:
             return
 
         ts_row.status = status
         ts_row.fraud_probability = prob
-        ts_row.decided_at = datetime.now(timezone.utc)
-        # Note: We don't commit here so the calling task can batch updates
+
+        if status in [TransactionStatus.SUCCESS, TransactionStatus.BLOCKED]:
+            ts_row.decided_at = datetime.now(timezone.utc)
+        # No commit here (ensuring Unit of Work pattern)
 
 
-def save_history_transaction(session: Session, data: dict, event_id: str):
+def save_history_transaction(session: Session, payload: TransactionInternal):
     """Saves to SQL and updates the sliding-window cache in Redis."""
+    hist = TransactionsHistory(
+        event_id=payload.event_id,
+        step=payload.step,
+        type=payload.type,
+        amount=payload.amount,
+        nameOrig=payload.nameOrig,
+        nameDest=payload.nameDest,
+        oldbalanceOrg=payload.oldbalanceOrg,
+        newbalanceOrig=payload.newbalanceOrig,
+        oldbalanceDest=payload.oldbalanceDest,
+        newbalanceDest=payload.newbalanceDest,
+        timestamp=payload.timestamp
+    )
 
-    # 1. Guarantee default values of 0.0 for any missing balances
-    db_payload = {
-        "oldbalanceOrg": float(data.get("oldbalanceOrg", 0.0)),
-        "newbalanceOrig": float(data.get("newbalanceOrig", 0.0)),
-        "oldbalanceDest": float(data.get("oldbalanceDest", 0.0)),
-        "newbalanceDest": float(data.get("newbalanceDest", 0.0))
-    }
-
-    # 2. Merge in the rest of the actual data, ignoring event_id duplicates
-    db_payload.update({
-        k: v for k, v in data.items()
-        if hasattr(TransactionsHistory, k) and k != "event_id"
-    })
-
-    # 3. Save to database
-    hist = TransactionsHistory(event_id=event_id, **db_payload)
     session.add(hist)
 
-    # CRITICAL: Commit immediately so parallel enrichment tasks can see this record
-    session.commit()
-
     try:
-        # Prepare for Redis
-        struct_data = HistoryStruct(**{k: v for k, v in data.items() if k in HistoryStruct.__struct_fields__})
+        struct_data = HistoryStruct(
+            step=payload.step,
+            type=payload.type,
+            amount=payload.amount,
+            nameOrig=payload.nameOrig,
+            nameDest=payload.nameDest,
+            oldbalanceOrg=payload.oldbalanceOrg,
+            newbalanceOrig=payload.newbalanceOrig,
+            oldbalanceDest=payload.oldbalanceDest,
+            newbalanceDest=payload.newbalanceDest,
+            event_id=str(payload.event_id),  # cast to string if needed
+            timestamp=payload.timestamp
+        )
         encoded_obj = HISTORY_ENCODER.encode(struct_data)
 
-        for uid in filter(None, [data.get("nameOrig"), data.get("nameDest")]):
+        for uid in filter(None, [payload.nameOrig, payload.nameDest]):
             key = f"hist:{uid}"
             if redis_client.exists(key):
                 with redis_client.pipeline() as pipe:
                     pipe.lpush(key, encoded_obj)
                     pipe.ltrim(key, 0, 199)
                     pipe.execute()
+
     except Exception as e:
         log.warning(f"Redis Live-Update Error: {e}")
 
 
-def save_suspicious_transaction(session: Session, data: dict, event_id: str, plot_path: str):
-    """Logs flagged transactions. Commit is required for the SHAP worker to find it."""
+def save_suspicious_transaction(session: Session, payload: TransactionInternal, event_id: str, plot_path: str):
+    """Logs flagged transactions. Pydantic guarantees clean data structure."""
     sus = SuspiciousTransactions(
         event_id=event_id,
-        amount=float(data.get("amount", 0.0)),
-        nameOrig=data.get("nameOrig"),
-        nameDest=data.get("nameDest"),
-        type=data.get("type"),
-        plot_path=plot_path,  # Now correctly assigned
-        timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else None
+        amount=payload.amount,
+        nameOrig=payload.nameOrig,
+        nameDest=payload.nameDest,
+        type=payload.type,
+        plot_path=plot_path,
+        timestamp=payload.timestamp
     )
     session.add(sus)
 
-    # CRITICAL: Commit here so the generate_shap_task worker finds the record instantly!
-    session.commit()
+    # FIX: Commit removed to preserve Celery batch atomicity
     log.info(f"Suspicious transaction {event_id} logged. Path: {plot_path}")
 
 
