@@ -1,11 +1,6 @@
-# src/celery_app.py
-
 from celery import Celery
 from celery.signals import worker_process_init
 from src.config.settings import settings
-
-#import sentry_sdk
-#from sentry_sdk.integrations.celery import CeleryIntegration
 
 
 celery_app = Celery(
@@ -36,11 +31,6 @@ celery_app.conf.update(
     }
 )
 
-
-#sentry_sdk.init(
-#    dsn=settings.SENTRY_DSN,
-#    integrations=[CeleryIntegration()]
-#)
 
 @worker_process_init.connect
 def init_worker_db_pool(**kwargs):
