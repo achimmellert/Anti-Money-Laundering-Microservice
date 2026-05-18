@@ -1,7 +1,5 @@
-# src/services/inference.py
-
 import os
-import logging
+from loguru import logger as log
 import numpy as np
 import pandas as pd
 import shap
@@ -10,15 +8,12 @@ from joblib import load as joblib_load
 import mlflow
 import mlflow.xgboost
 
-# --- FIX 1: Prevent Celery Memory Leaks ---
 import matplotlib
 
 matplotlib.use('Agg')  # Force non-interactive, memory-safe backend
 import matplotlib.pyplot as plt
 
 from src.config.settings import settings
-
-log = logging.getLogger(__name__)
 
 
 class FraudDetectionModel:
@@ -27,26 +22,25 @@ class FraudDetectionModel:
         self.preproc = None
         self.explainer = None
         self.feature_names = None
-        # Load configurable threshold (defaults to 0.5 if not set in .env)
-        self.threshold = getattr(settings, "FRAUD_THRESHOLD", 0.5)
+        self.threshold = settings.FRAUD_THRESHOLD
         self._load_model()
 
     def _load_model(self):
-        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+        tracking_uri = settings.MLFLOW_TRACKING_URI
         mlflow.set_tracking_uri(tracking_uri)
 
         try:
             log.info(f"Connecting to MLflow at {tracking_uri}...")
             self.model = mlflow.xgboost.load_model("models:/FraudDetectionModel/Production")
-            log.info("✅ MLflow 'Production' model loaded successfully.")
+            log.info("MLflow 'Production' model loaded successfully.")
         except Exception as e:
-            log.warning(f"⚠️ MLflow load failed (Fallback to local model). Reason: {e}")
+            log.warning(f"MLflow load failed (Fallback to local model). Reason: {e}")
             self.model = xgb.Booster()
-            self.model.load_model(settings.MODEL_PATH)
+            self.model.load_model(str(settings.MODEL_PATH))
 
         self.preproc = joblib_load(settings.PREPROC_PATH)
 
-        if not os.path.exists(settings.FEATNAMES_PATH):
+        if not settings.FEATNAMES_PATH.exists():
             raise FileNotFoundError(
                 f"{settings.FEATNAMES_PATH} missing – this Booster requires exact column names."
             )
@@ -62,7 +56,6 @@ class FraudDetectionModel:
         if X_trans.shape[1] != len(self.feature_names):
             raise ValueError(f"Column mismatch: X={X_trans.shape[1]} vs feature_names={len(self.feature_names)}")
 
-        # --- FIX 2: Zero-Copy DMatrix ---
         # Pass the NumPy array (X_trans) directly instead of wrapping in Pandas
         return xgb.DMatrix(X_trans, feature_names=self.feature_names), X_trans
 
@@ -70,7 +63,6 @@ class FraudDetectionModel:
         dmat, _ = self._prepare_dmatrix(raw_features_df)
         prob = float(self.model.predict(dmat)[0])
 
-        # --- FIX 3: Dynamic Threshold ---
         is_fraud = 1 if prob >= self.threshold else 0
         decision = "BLOCKED" if is_fraud else "SUCCESS"
 
@@ -94,6 +86,9 @@ class FraudDetectionModel:
     def save_shap_barplot(self, raw_features_df: pd.DataFrame, out_path: str):
         _, X_trans = self._prepare_dmatrix(raw_features_df)
         shap_values = self.explainer.shap_values(X_trans)
+
+        # Ensure target directory exists before saving
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         # Explicit memory management for background plots
         fig, ax = plt.subplots(figsize=(10, 6))
