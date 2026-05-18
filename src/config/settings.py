@@ -1,35 +1,26 @@
-# src/config/settings.py
-
 from typing import List
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import MySQLDsn, RedisDsn
 
 
-current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent.parent
-env_path = project_root / ".env"
-
-MODEL_PATH: str = "ml_models/model.json"
-FEATNAMES_PATH: str = "ml_models/feature_names.npy"
-PREPROC_PATH: str = "ml_models/preprocessor.pkl"
-
-START_STEP: str = "743"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    # --- INFRASTRUCTURE SECRETS
     REDIS_URL: RedisDsn
     DATABASE_URL: MySQLDsn
-    MODEL_PATH: str
-    FEATNAMES_PATH: str
-    START_STEP: str
 
-    MODEL_PATH: str = "ml_models/model.json"
-    FEATNAMES_PATH: str = "ml_models/feature_names.npy"
-    PREPROC_PATH: str = "ml_models/preprocessor.pkl"
+    # --- CONFIGURATIONS ---
+    START_STEP: int = 743
 
-    START_STEP: str = "743"
+    # --- ABSOLUTE FILE PATHS ---
+    MODEL_PATH: Path = PROJECT_ROOT / "ml_models" / "model.json"
+    FEATNAMES_PATH: Path = PROJECT_ROOT / "ml_models" / "feature_names.npy"
+    PREPROC_PATH: Path = PROJECT_ROOT / "ml_models" / "preprocessor.pkl"
 
+    # --- STATIC APPLICATION CONSTANTS ---
     RAW_FEATURE_COLUMNS: List[str] = [
         "type", "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest",
         "sender_time_since_last_trans", "sender_trans_count_5_steps", "sender_total_trans_count",
@@ -46,12 +37,10 @@ class Settings(BaseSettings):
 
     NUMERIC_FEATURES: List[str] = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
 
-
-    # nur für Local Development
     model_config = SettingsConfigDict(
-        env_file=env_path,
+        env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore"             # Ignores random environment variables not listed in this class
     )
 
 
