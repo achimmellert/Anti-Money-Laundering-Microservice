@@ -14,7 +14,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
-ENV START_STEP=743
-
 EXPOSE 8000
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
