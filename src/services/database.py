@@ -1,5 +1,3 @@
-# src/services/database.py
-
 from typing import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -22,7 +20,6 @@ def get_db_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    # Models importieren, damit sie bei Base registriert sind
     from src.models import db_models  # noqa: F401
     from src.models.db_models import Base
     Base.metadata.create_all(bind=engine)
