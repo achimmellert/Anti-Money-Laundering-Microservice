@@ -3,10 +3,11 @@ import httpx
 import csv
 import asyncio
 from pathlib import Path
+import os
 from datetime import datetime
 
 
-API_URL = "http://localhost:8000/api/v1"
+API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1")
 
 CURRENT_FILE = Path(__file__).resolve()
 BASE_DIR = CURRENT_FILE.parents[2]
@@ -246,7 +247,7 @@ class AMLDashboard:
                         if status in ["SUCCESS", "BLOCKED"]:
                             break
             except Exception as e:
-                print(f"Pooling error for event {event_id}: {ex}")
+                print(f"Pooling error for event {event_id}: {e}")
 
             await asyncio.sleep(2)  # 2 Sekunden warten, entlastet die DB
 
