@@ -38,6 +38,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       PYTHONPATH: /app
+      API_URL: ${API_URL}
     depends_on:
       redis:
         condition: service_healthy
@@ -46,7 +47,7 @@ services:
     volumes:
       - .:/app
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    # Added Healthcheck to ensure DB tables are created before workers start
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 10s
