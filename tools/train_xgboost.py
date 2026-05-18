@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-import logging
+from loguru import logger as log
 import warnings
 import optuna
 import mlflow
@@ -13,11 +13,9 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.preprocessing import OrdinalEncoder
 from optuna.integration import XGBoostPruningCallback
 
-# Suppress warnings for cleaner output
+
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger(__name__)
 
 # === CONFIGURATION ===
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -182,8 +180,6 @@ def main():
     X_train_full = pd.concat([X_train, X_val])
     y_train_full = pd.concat([y_train, y_val])
 
-    # We remove early stopping here because we are using the full training set
-    # and already found the optimal 'n_estimators' in the study.
     best_params = study.best_params
 
     final_clf = xgb.XGBClassifier(
@@ -198,20 +194,16 @@ def main():
     final_clf.fit(X_train_full, y_train_full, verbose=False)
 
     with mlflow.start_run(run_name="Best_XGBoost_Model"):
-        # 1. Log the parameters we found
         mlflow.log_params(best_params)
         mlflow.log_param("device", "cuda")
 
-        # 2. Evaluate on the completely unseen Test Set
         test_preds = final_clf.predict_proba(X_test)[:, 1]
         test_pr_auc = average_precision_score(y_test, test_preds)
         test_roc_auc = roc_auc_score(y_test, test_preds)
 
-        # 3. Log Metrics
         mlflow.log_metric("test_pr_auc", test_pr_auc)
         mlflow.log_metric("test_roc_auc", test_roc_auc)
 
-        # 4. Save the Model Locally (in the mlruns folder)
         mlflow.xgboost.log_model(
             xgb_model=final_clf,
             artifact_path="xgboost-model",

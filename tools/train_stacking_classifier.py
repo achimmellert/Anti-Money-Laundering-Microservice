@@ -16,10 +16,9 @@ from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from optuna.integration import XGBoostPruningCallback
 
-# --- Import your custom wrapper here ---
 from src.services.model_wrappers import SklearnPyTorchWrapper
 
-# Suppress warnings for cleaner output
+
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

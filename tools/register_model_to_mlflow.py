@@ -4,13 +4,15 @@ import mlflow
 import mlflow.xgboost
 from mlflow.tracking import MlflowClient
 
-# 1. MLflow Tracking URI definieren (Da du das Skript lokal ausführst: localhost)
+
+# 1. MLflow Tracking URI definieren
 MLFLOW_URI = "http://localhost:5000"
 mlflow.set_tracking_uri(MLFLOW_URI)
 
 # 2. Pfad zum lokalen Modell
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, "ml_models", "model.json")
+
 
 def main():
     """
@@ -46,16 +48,16 @@ def main():
     client = MlflowClient()
     latest_version_info = client.get_latest_versions(model_name, stages=["None"])[0]
     client.transition_model_version_stage(name=model_name, version=latest_version_info.version, stage="Production")
-    print(f"✅ Modell-Version {latest_version_info.version} auf 'Production' gesetzt!")
+    print(f"Modell-Version {latest_version_info.version} auf 'Production' gesetzt!")
     
-    # 5. (BEST PRACTICE) Alle anderen Versionen, die nicht 'Production' sind, archivieren
+    # 5. Alle anderen Versionen, die nicht 'Production' sind, archivieren
     all_versions = client.search_model_versions(f"name='{model_name}'")
     for v in all_versions:
         if v.current_stage not in ["Production", "Archived"]:
             print(f"Archiviere alte Version {v.version} (Stage: {v.current_stage})...")
             client.transition_model_version_stage(name=model_name, version=v.version, stage="Archived")
 
-    print("✅ Aufräumen abgeschlossen.")
+    print("Aufräumen abgeschlossen.")
 
 if __name__ == "__main__":
     main()

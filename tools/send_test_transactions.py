@@ -5,6 +5,7 @@ import os
 import requests
 from datetime import datetime
 
+
 # === Konfiguration ===
 FASTAPI_URL = "http://localhost:8000/api/v1/transaction"
 
@@ -14,6 +15,7 @@ CSV_PATH = os.path.join(BASE_DIR, "data", "test.csv")
 BATCH_SIZE = 10                     # optional: wie viele pro Pause
 SLEEP_BETWEEN_BATCHES = 1.0         # Sekunden warten nach jedem Batch
 MAX_RECORDS = 100                   # Anzahl der Datensätze, die gesendet werden sollen
+
 
 # === Hilfsfunktion ===
 def send_transaction(row):
@@ -61,7 +63,7 @@ def main():
                 print(f"--- {count} Transaktionen gesendet (Batch {batch}) ---")
                 time.sleep(SLEEP_BETWEEN_BATCHES)
 
-    print(f"\n✅ Fertig! Insgesamt {count} Transaktionen gesendet.")
+    print(f"\nFertig! Insgesamt {count} Transaktionen gesendet.")
 
 if __name__ == "__main__":
     main()
