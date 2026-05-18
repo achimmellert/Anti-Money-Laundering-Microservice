@@ -1,10 +1,9 @@
-# src/tasks/inference.py
-
-import logging
+from loguru import logger as log
 from datetime import datetime, timezone
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
 from celery_batches import Batches
+from celery.signals import worker_process_init
 
 from src.celery_app import celery_app
 from src.services.database import SessionLocal
@@ -15,14 +14,28 @@ from src.utils.db_helpers import (
     save_to_dlq
 )
 from src.config.settings import settings
-from src.models.db_models import MonitoringInference, SuspiciousTransactions
+from src.models.db_models import MonitoringInference
 
-log = logging.getLogger(__name__)
+
+# Global placeholder for the ML Model
 model_service = None
+
+
+@worker_process_init.connect
+def init_worker_ml_model(**kwargs):
+    """
+    Preload the ML model into RAM when the Celery
+    worker process boots, ensuring zero latency for the first transaction.
+    """
+    global model_service
+    log.info("Worker booting: Pre-loading FraudDetectionModel into memory...")
+    model_service = FraudDetectionModel()
+    log.info("Worker booting complete: Model ready for inference.")
 
 
 @celery_app.task(base=Batches, flush_every=50, flush_interval=0.5, bind=True, max_retries=3)
 def run_inference_task(self, requests):
+    # Fallback just in case the task is called synchronously during testing
     global model_service
     if model_service is None:
         model_service = FraudDetectionModel()
@@ -33,9 +46,7 @@ def run_inference_task(self, requests):
     events = []
     rows = []
 
-    # 1. Faster Extraction Logic
     for req in requests:
-        # If part of a chain, data is in args[0]. If direct call, data is in kwargs.
         chain_data = req.args[0] if req.args else {}
         data = chain_data.get("data") or req.kwargs.get("data", {})
         event_id = chain_data.get("event_id") or req.kwargs.get("event_id")
@@ -43,7 +54,6 @@ def run_inference_task(self, requests):
         if not event_id:
             continue
 
-        # Dictionary comprehension is faster for mapping features
         row = {col: float(data.get(col, 0.0)) for col in settings.NUMERIC_FEATURES}
         row["type"] = str(data.get("type", ""))
 
@@ -53,37 +63,38 @@ def run_inference_task(self, requests):
     if not rows:
         return
 
-    # 2. Vectorized Prediction
+    # Vectorized Prediction
     X_raw = pd.DataFrame(rows, columns=settings.RAW_FEATURE_COLUMNS)
     try:
         results = model_service.predict_batch(X_raw)
     except Exception as e:
         log.error(f"Inference Failure: {e}")
-        # --- RETRY OPTIMIZATION ---
         if self.request.retries >= self.max_retries:
             for _, eid, d in events:
                 save_to_dlq("inference_ml_failure", eid, d, str(e))
-            return  # Stop here so we don't crash the worker
+            return
         raise self.retry(exc=e, countdown=5)
 
     monitoring_entries = []
 
-    # 3. Optimized DB Session
     with SessionLocal() as session:
         try:
             for i, (req, event_id, data) in enumerate(events):
                 prob, is_fraud, decision = results[i]
 
-                # Update State (O(1) logic inside helper is key)
+                # Update State (O(1)) - Ensure this helper DOES NOT call session.commit()
                 update_transaction_state(session, event_id, decision, prob, data)
 
                 if decision != "SUCCESS":
-                    plot_path = f"plots/blocked_{event_id}.png"
-                    save_suspicious_transaction(session, data, event_id, plot_path)
+                    # Fix: Absolute Path construction via settings
+                    plot_path = settings.PROJECT_ROOT / "plots" / f"blocked_{event_id}.png"
+
+                    # Convert to string if the helper strictly expects a string
+                    save_suspicious_transaction(session, data, event_id, str(plot_path))
 
                     # Offload SHAP (Async)
-                    row_dict = X_raw.iloc[[i]].to_dict('records')[0]
-                    generate_shap_task.delay(row_dict, event_id)
+                    row_dict = X_raw.iloc[i].to_dict()
+                    generate_shap_task.delay(row_dict, event_id, str(plot_path))
 
                 # Prepare Bulk Monitoring
                 monitoring_entries.append({
@@ -94,7 +105,7 @@ def run_inference_task(self, requests):
                     "features_json": {k: data.get(k) for k in settings.RAW_FEATURE_COLUMNS if k in data}
                 })
 
-            # 4. Final Batch Commit
+            # Final Batch Commit
             if monitoring_entries:
                 session.bulk_insert_mappings(MonitoringInference, monitoring_entries)
 
@@ -104,7 +115,6 @@ def run_inference_task(self, requests):
         except SQLAlchemyError as e:
             session.rollback()
             log.error(f"DB Error in Inference Batch: {e}")
-            # --- FINAL ATTEMPT PROTECTION ---
             if self.request.retries >= self.max_retries:
                 for _, eid, d in events:
                     save_to_dlq("inference_db_failure", eid, d, str(e))
@@ -113,13 +123,12 @@ def run_inference_task(self, requests):
 
 
 @celery_app.task(max_retries=2)
-def generate_shap_task(row_dict: dict, event_id: str):
+def generate_shap_task(row_dict: dict, event_id: str, plot_path: str):
     """Background task for SHAP visualization."""
     global model_service
     if model_service is None:
         model_service = FraudDetectionModel()
 
-    plot_path = f"plots/blocked_{event_id}.png"
     try:
         model_service.save_shap_barplot(pd.DataFrame([row_dict]), plot_path)
     except Exception as e:
