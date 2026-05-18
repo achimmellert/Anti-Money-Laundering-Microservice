@@ -1,5 +1,3 @@
-# src/api/routes/transactions.py
-
 import uuid
 from loguru import logger as log
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,7 +6,10 @@ from sqlalchemy import select, desc, delete
 from sqlalchemy.orm import Session
 from celery import chain
 
-from src.models.schemas import TransactionCreate
+from src.models.schemas import (TransactionCreate,
+                                TransactionStatusResponse,
+                                TransactionInternal,
+                                TransactionAcceptedResponse)
 from src.models.db_models import TransactionsState, DeadLetterQueue
 from src.services.database import get_db_session
 from src.utils.db_helpers import get_user_history, redis_client
@@ -34,24 +35,31 @@ def get_next_step() -> int:
         return int(settings.START_STEP)
 
 
-@router.post("/transaction", status_code=status.HTTP_202_ACCEPTED)
-def submit_transaction(transaction: TransactionCreate, db: Session = Depends(get_db_session)):
+@router.post("/transaction", status_code=status.HTTP_202_ACCEPTED, response_model=TransactionAcceptedResponse)
+def submit_transaction(transaction: TransactionCreate):
     event_id = str(uuid.uuid4())
     step_val = get_next_step()
 
-    payload = transaction.model_dump()
-    payload["event_id"] = event_id
-    payload["step"] = step_val
-    payload["timestamp"] = transaction.timestamp.isoformat()
+    internal_tx = TransactionInternal(
+        **transaction.model_dump(),
+        event_id=event_id,
+        step=step_val
+    )
 
+    # Serialize for Celery (mode="json") since Celery use a standard JSON serializer
+    celery_payload = internal_tx.model_dump(mode="json")
+
+    # Hands it off to the two separate workers: persistence-worker and inference-worker
     try:
-        run_persistence_task.delay(data=payload, event_id=event_id)
+        # 1) persistence-worker
+        run_persistence_task.delay(data=celery_payload, event_id=event_id)
 
-        inference_process_pipeline = chain(
-            run_enrichment_task.s(data=payload, event_id=event_id),
+        # 2) inference-worker
+        inference_task_pipeline = chain(
+            run_enrichment_task.s(data=celery_payload, event_id=event_id),
             run_inference_task.s()
         )
-        inference_process_pipeline.apply_async()
+        inference_task_pipeline.apply_async()
 
         log.info(f"Transaction {event_id} queued: Audit started & Intelligence Pipeline chained.")
 
@@ -66,7 +74,7 @@ def submit_transaction(transaction: TransactionCreate, db: Session = Depends(get
     }
 
 
-@router.get("/transaction-status/{event_id}")
+@router.get("/transaction-status/{event_id}", response_model=TransactionStatusResponse)
 def get_transaction_status(event_id: str, db: Session = Depends(get_db_session)):
     stmt = select(TransactionsState).where(TransactionsState.event_id == event_id)
     row = db.execute(stmt).scalar_one_or_none()
@@ -74,19 +82,7 @@ def get_transaction_status(event_id: str, db: Session = Depends(get_db_session))
     if not row:
         raise HTTPException(status_code=404, detail="Unknown event_id")
 
-    return {
-        "event_id": event_id,
-        "status": row.status,
-        "fraud_probability": row.fraud_probability,
-        "decided_at": row.decided_at,
-        "created_at": row.created_at,
-        "type": row.type,
-        "amount": row.amount,
-        "nameOrig": row.nameOrig,
-        "nameDest": row.nameDest,
-        "step": row.step,
-        "timestamp": row.timestamp,
-    }
+    return row
 
 
 @router.delete("/transaction-state")
@@ -141,8 +137,7 @@ def healthcheck(db: Session = Depends(get_db_session)):
     status_dict = {"redis_ready": False, "db_ok": False}
 
     try:
-        with celery_app.connection() as conn:
-            conn.connect()
+        if redis_client.ping():
             status_dict["redis_ready"] = True
     except Exception:
         pass
