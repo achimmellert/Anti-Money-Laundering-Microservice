@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     ]
 
     NUMERIC_FEATURES: List[str] = [c for c in RAW_FEATURE_COLUMNS if c != "type"]
+    FRAUD_THRESHOLD: float = 0.5
+    MLFLOW_TRACKING_URI: str = "http://localhost:5000"
 
     model_config = SettingsConfigDict(
         env_file=".env",
