@@ -4,6 +4,7 @@ import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
 from celery_batches import Batches
 from celery.signals import worker_process_init
+from pydantic import ValidationError
 
 from src.celery_app import celery_app
 from src.services.database import SessionLocal
@@ -15,6 +16,7 @@ from src.utils.db_helpers import (
 )
 from src.config.settings import settings
 from src.models.db_models import MonitoringInference
+from src.models.schemas import TransactionInternal
 
 
 # Global placeholder for the ML Model
@@ -48,17 +50,31 @@ def run_inference_task(self, requests):
 
     for req in requests:
         chain_data = req.args[0] if req.args else {}
-        data = chain_data.get("data") or req.kwargs.get("data", {})
+        data_dict = chain_data.get("data") or req.kwargs.get("data", {})
         event_id = chain_data.get("event_id") or req.kwargs.get("event_id")
 
-        if not event_id:
+        if not event_id or not data_dict:
             continue
 
-        row = {col: float(data.get(col, 0.0)) for col in settings.NUMERIC_FEATURES}
-        row["type"] = str(data.get("type", ""))
+        # --- 1. PARSE AT THE EDGE: Instantly convert raw dict to Pydantic model ---
+        try:
+            payload = TransactionInternal(**data_dict)
+        except ValidationError as e:
+            log.error(f"Pydantic validation failed for {event_id}: {e}")
+            save_to_dlq("inference_validation_failure", event_id, data_dict, str(e))
+            continue
+
+        # --- 2. EXTRACT FEATURES CLEANLY ---
+        # mode="json" ensures Enums, UUIDs, and datetimes are serialized to strings safely
+        valid_data = payload.model_dump(mode="json")
+
+        row = {col: float(valid_data.get(col, 0.0)) for col in settings.NUMERIC_FEATURES}
+        row["type"] = payload.type.value  # Safe Enum access
 
         rows.append(row)
-        events.append((req, event_id, data))
+
+        # Store both the strictly-typed object and the serialized dict for downstream use
+        events.append((req, event_id, payload, valid_data))
 
     if not rows:
         return
@@ -70,8 +86,8 @@ def run_inference_task(self, requests):
     except Exception as e:
         log.error(f"Inference Failure: {e}")
         if self.request.retries >= self.max_retries:
-            for _, eid, d in events:
-                save_to_dlq("inference_ml_failure", eid, d, str(e))
+            for _, eid, _, valid_data in events:
+                save_to_dlq("inference_ml_failure", eid, valid_data, str(e))
             return
         raise self.retry(exc=e, countdown=5)
 
@@ -79,18 +95,17 @@ def run_inference_task(self, requests):
 
     with SessionLocal() as session:
         try:
-            for i, (req, event_id, data) in enumerate(events):
+            for i, (req, event_id, payload, valid_data) in enumerate(events):
                 prob, is_fraud, decision = results[i]
 
-                # Update State (O(1)) - Ensure this helper DOES NOT call session.commit()
-                update_transaction_state(session, event_id, decision, prob, data)
+                # Pass the strictly-typed Pydantic model
+                update_transaction_state(session, event_id, decision, prob, payload)
 
                 if decision != "SUCCESS":
-                    # Fix: Absolute Path construction via settings
                     plot_path = settings.PROJECT_ROOT / "plots" / f"blocked_{event_id}.png"
 
-                    # Convert to string if the helper strictly expects a string
-                    save_suspicious_transaction(session, data, event_id, str(plot_path))
+                    # Pass the Pydantic model here too!
+                    save_suspicious_transaction(session, payload, event_id, str(plot_path))
 
                     # Offload SHAP (Async)
                     row_dict = X_raw.iloc[i].to_dict()
@@ -102,7 +117,7 @@ def run_inference_task(self, requests):
                     "timestamp": datetime.now(timezone.utc),
                     "y_pred_proba": float(prob),
                     "decision": decision,
-                    "features_json": {k: data.get(k) for k in settings.RAW_FEATURE_COLUMNS if k in data}
+                    "features_json": {k: valid_data.get(k) for k in settings.RAW_FEATURE_COLUMNS if k in valid_data}
                 })
 
             # Final Batch Commit
@@ -116,8 +131,8 @@ def run_inference_task(self, requests):
             session.rollback()
             log.error(f"DB Error in Inference Batch: {e}")
             if self.request.retries >= self.max_retries:
-                for _, eid, d in events:
-                    save_to_dlq("inference_db_failure", eid, d, str(e))
+                for _, eid, _, valid_data in events:
+                    save_to_dlq("inference_db_failure", eid, valid_data, str(e))
             else:
                 raise self.retry(exc=e, countdown=5)
 
