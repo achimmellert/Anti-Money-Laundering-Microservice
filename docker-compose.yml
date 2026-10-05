@@ -1,149 +1,248 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-environment: &app-environment
+  REDIS_URL: redis://redis:6379/0
+  DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  PYTHONPATH: /app/src
+  API_URL: ${API_URL:-http://fastapi-app:8000/api/v1}
+  START_STEP: ${START_STEP:-743}
+  FRAUD_THRESHOLD: ${FRAUD_THRESHOLD:-0.5}
+  PYTHONUNBUFFERED: "1"
+
 services:
+  # ==========================================
+  # Infrastructure Services (Backend Network)
+  # ==========================================
   redis:
     image: redis:7-alpine
     container_name: aml_redis
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "${REDIS_MAXMEMORY:-512mb}"
+      - --maxmemory-policy
+      - "noeviction"
     ports:
-      - "6379:6379"
+      # Bound strictly to 127.0.0.1 for local host inspection; isolated from public interfaces
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    logging: *default-logging
 
   mysql:
     image: mysql:8.0
     container_name: aml_mysql
-    ports:
-      - "3307:3306"
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --log_bin_trust_function_creators=1
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-aml_db}
       MYSQL_USER: ${MYSQL_USER:-aml_user}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aml_secure_password}
+    ports:
+      # Bound strictly to 127.0.0.1 for local host inspection; isolated from public interfaces
+      - "127.0.0.1:${MYSQL_PORT:-3307}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-    command: --default-authentication-plugin=mysql_native_password --log_bin_trust_function_creators=1
+    networks:
+      - backend
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-aml_user}", "-p${MYSQL_PASSWORD:-aml_secure_password}"]
+      test: [ "CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD:-rootpassword} --silent" ]
       interval: 5s
       timeout: 5s
-      retries: 60
-
-  fastapi-app:
-    build: .
-    container_name: aml_fastapi
-    ports:
-      - "8000:8000"
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
-      PYTHONPATH: /app/src
-      API_URL: ${API_URL:-http://localhost:8000/api/v1}
-    depends_on:
-      redis:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-    volumes:
-      - .:/app
-    command: ["uvicorn", "aml.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      retries: 30
+      start_period: 15s
     restart: unless-stopped
-
-  persistence-worker:
-    build: .
-    container_name: aml_persistence_worker
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
-      PYTHONPATH: /app/src
-    depends_on:
-      redis:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-      fastapi-app:
-        condition: service_healthy
-    volumes:
-      - .:/app
-    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
-    restart: unless-stopped
-
-  enrichment-worker:
-    build: .
-    container_name: aml_enrichment_worker
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
-      PYTHONPATH: /app/src
-    depends_on:
-      redis:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-      fastapi-app:
-        condition: service_healthy
-    volumes:
-      - .:/app
-    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100"]
-    restart: unless-stopped
-
-  inference-worker:
-    build: .
-    container_name: aml_inference_worker
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      PYTHONPATH: /app/src
-    depends_on:
-      redis:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-      fastapi-app:
-        condition: service_healthy
-    volumes:
-      - .:/app
-    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4"]
-    restart: unless-stopped
-
-  background-worker:
-    build: .
-    container_name: aml_background_worker
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db}
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      PYTHONPATH: /app/src
-    depends_on:
-      redis:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
-      fastapi-app:
-        condition: service_healthy
-    volumes:
-      - .:/app
-    command: ["celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "background", "--loglevel=info", "--pool=threads", "--concurrency=2"]
-    restart: unless-stopped
+    logging: *default-logging
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.11.1
     container_name: aml_mlflow
-    ports:
-      - "5000:5000"
     command: >
       /bin/sh -c "pip install pymysql && mlflow server --backend-store-uri mysql+pymysql://${MYSQL_USER:-aml_user}:${MYSQL_PASSWORD:-aml_secure_password}@mysql:3306/${MYSQL_DATABASE:-aml_db} --artifacts-destination /mlflow_artifacts --serve-artifacts --host 0.0.0.0"
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
     volumes:
-      - ./mlflow_artifacts:/mlflow_artifacts
+      - mlflow_artifacts:/mlflow_artifacts
+    networks:
+      - public
+      - backend
     depends_on:
       mysql:
         condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')\"" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
 
+  # ==========================================
+  # Public API Layer (Public + Backend Networks)
+  # ==========================================
+  fastapi-app:
+    build: .
+    container_name: aml_fastapi
+    command: [ "uvicorn", "aml.api.main:app", "--host", "0.0.0.0", "--port", "8000" ]
+    environment: *app-environment
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - public
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')\"" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ==========================================
+  # Asynchronous Workers (Backend Network Only)
+  # ==========================================
+  persistence-worker:
+    build: .
+    container_name: aml_persistence_worker
+    command: [ "celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "persistence", "--loglevel=info", "--pool=gevent", "--concurrency=100", "--prefetch-multiplier=4" ]
+    environment: *app-environment
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  enrichment-worker:
+    build: .
+    container_name: aml_enrichment_worker
+    command: [ "celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "enrichment", "--loglevel=info", "--pool=gevent", "--concurrency=100", "--prefetch-multiplier=4" ]
+    environment: *app-environment
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  inference-worker:
+    build: .
+    container_name: aml_inference_worker
+    # Concurrency 4 with prefetch-multiplier 15 buffers up to 60 tasks, ensuring celery-batches flush_every=50 flushes immediately
+    command: [ "celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "inference", "--loglevel=info", "--pool=threads", "--concurrency=4", "--prefetch-multiplier=15" ]
+    environment: *app-environment
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  background-worker:
+    build: .
+    container_name: aml_background_worker
+    # Concurrency 2 with prefetch-multiplier 1 ensures fair dispatch for compute-intensive SHAP tasks
+    command: [ "celery", "-A", "aml.celery_app.celery_app", "worker", "-Q", "background", "--loglevel=info", "--pool=threads", "--concurrency=2", "--prefetch-multiplier=1" ]
+    environment: *app-environment
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+# ==========================================
+# Network Topology
+# ==========================================
+networks:
+  public:
+    name: aml_public_net
+    driver: bridge
+  backend:
+    name: aml_backend_net
+    driver: bridge
+
+# ==========================================
+# Persistent Storage Volumes
+# ==========================================
 volumes:
   mysql_data:
+    name: aml_mysql_data
+  redis_data:
+    name: aml_redis_data
+  mlflow_artifacts:
+    name: aml_mlflow_artifacts

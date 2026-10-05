@@ -2,8 +2,12 @@
 import polars as pl
 import numpy as np
 
-from aml.config.settings import settings
-from aml.models.dataframes import HistoryDataFrameSchema, EnrichedFeaturesSchema
+from aml.models.dataframes import (
+    HistoryDataFrameSchema,
+    EnrichedFeaturesSchema,
+    RAW_FEATURE_COLUMNS,
+    METADATA_COLUMNS
+)
 
 REQUIRED_COLS = [
     "step", "type", "amount", "nameOrig", "oldbalanceOrg", "newbalanceOrig",
@@ -156,8 +160,8 @@ def create_features(df: pl.DataFrame) -> pl.DataFrame:
     # Sort back to standard step order so the current transaction lands cleanly at index [-1]
     df = df.sort("step")
 
-    # Extract final features specified by settings
-    final_cols = settings.RAW_FEATURE_COLUMNS + ["step", "nameOrig", "nameDest", "timestamp"]
+    # Extract final features specified by the schema contracts
+    final_cols = RAW_FEATURE_COLUMNS + METADATA_COLUMNS
     feat_df = df.select(final_cols)
 
     # --- PANDERA RUNTIME VALIDATION ---

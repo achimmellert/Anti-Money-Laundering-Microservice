@@ -30,6 +30,7 @@ from aml.models.db_models import (
     TransactionType
 )
 from aml.config.settings import settings
+from aml.models.dataframes import RAW_FEATURE_COLUMNS
 import aml.tasks.enrichment as enrichment_mod
 import aml.tasks.inference as inference_mod
 import aml.tasks.persistence as persistence_mod
@@ -225,7 +226,7 @@ class RealPipelineMLModel:
     """
 
     def __init__(self, forced_proba: float | None = None):
-        self.feature_names = settings.RAW_FEATURE_COLUMNS
+        self.feature_names = RAW_FEATURE_COLUMNS
         numeric_cols = [c for c in self.feature_names if c != "type"]
         cat_cols = ["type"]
 

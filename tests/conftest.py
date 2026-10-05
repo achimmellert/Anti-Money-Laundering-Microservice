@@ -5,7 +5,7 @@ os.environ.setdefault("DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/
 import pytest
 import pandera.polars as pa
 import polars as pl
-from aml.config.settings import settings
+from aml.models.dataframes import NUMERIC_FEATURES
 
 
 # 1. Define the statistical rules for your AML data in Polars
@@ -16,7 +16,7 @@ aml_schema = pa.DataFrameSchema({
     "newbalanceOrig": pa.Column(float, pa.Check.ge(0)),
     "oldbalanceDest": pa.Column(float, pa.Check.ge(0)),
     "newbalanceDest": pa.Column(float, pa.Check.ge(0)),
-    **{col: pa.Column(float) for col in settings.NUMERIC_FEATURES if col not in [
+    **{col: pa.Column(float) for col in NUMERIC_FEATURES if col not in [
         "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"
     ]}
 })
@@ -36,7 +36,7 @@ def mock_input_df() -> pl.DataFrame:
             "oldbalanceDest": 50.0,
             "newbalanceDest": 150.0,
         }
-        for col in settings.NUMERIC_FEATURES:
+        for col in NUMERIC_FEATURES:
             if col not in row:
                 row[col] = 1.0
         rows.append(row)

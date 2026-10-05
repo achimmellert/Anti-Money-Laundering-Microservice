@@ -26,6 +26,9 @@ HIST_SCHEMA = {
     "timestamp": pl.Datetime,
 }
 
+# History rows additionally carry the event_id so the current transaction can be excluded
+HIST_SCHEMA_WITH_ID = {**HIST_SCHEMA, "event_id": pl.String}
+
 
 @celery_app.task(bind=True, max_retries=3)
 def run_enrichment_task(self, data: dict, event_id: str):
@@ -40,7 +43,7 @@ def run_enrichment_task(self, data: dict, event_id: str):
         current_tx = TransactionInternal.model_validate(data)
     except Exception as e:
         log.critical(f"FATAL: Input validation failed for {event_id}. Moving to DLQ.")
-        save_to_dlq("enchrichment_validation", event_id, data, str(e))
+        save_to_dlq("enrichment_validation", event_id, data, str(e))
         return
 
     with SessionLocal() as session:
@@ -60,12 +63,20 @@ def run_enrichment_task(self, data: dict, event_id: str):
                         "step": r.step, "type": r.type, "amount": float(r.amount),
                         "nameOrig": r.nameOrig, "oldbalanceOrg": float(r.oldbalanceOrg), "newbalanceOrig": float(r.newbalanceOrig),
                         "nameDest": r.nameDest, "oldbalanceDest": float(r.oldbalanceDest), "newbalanceDest": float(r.newbalanceDest),
-                        "timestamp": r.timestamp
+                        "timestamp": r.timestamp, "event_id": r.event_id
                     } for r in rows]
 
-                hist_df = pl.DataFrame(rows_data, schema=HIST_SCHEMA)
+                hist_df = pl.DataFrame(rows_data, schema=HIST_SCHEMA_WITH_ID)
                 hist_df = (
-                    hist_df.unique(maintain_order=True)
+                    hist_df
+                    # Persistence runs in parallel: never let the current or any later
+                    # transaction leak into its own history window (point-in-time correctness)
+                    .filter(
+                        (pl.col("step") < current_tx.step)
+                        & (pl.col("event_id").is_null() | (pl.col("event_id") != str(current_tx.event_id)))
+                    )
+                    .unique(maintain_order=True)
+                    .drop("event_id")
                     .sort("step", descending=True)
                 )
 
@@ -88,8 +99,8 @@ def run_enrichment_task(self, data: dict, event_id: str):
             full_df = pl.concat([hist_df, cur_df_imputed])
             feat_df = create_features(full_df)
 
-            # 7. Extract the newly enriched row for the Chain
-            enriched_data = feat_df.to_dicts()[-1]
+            # 7. Extract the newly enriched row for the Chain (history only holds smaller steps)
+            enriched_data = feat_df.filter(pl.col("step") == current_tx.step).row(0, named=True)
 
             # Serialize datetimes back to strings for JSON/Celery transmission
             if enriched_data.get("timestamp") is not None:

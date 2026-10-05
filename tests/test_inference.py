@@ -4,7 +4,7 @@ import polars as pl
 from unittest.mock import patch, MagicMock
 
 from aml.services.inference import FraudDetectionModel
-from aml.config.settings import settings
+from aml.models.dataframes import RAW_FEATURE_COLUMNS
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def mock_fraud_model():
         # 1. Mock the Preprocessor
         model_service.preproc = MagicMock()
 
-        model_service.preproc.transform.return_value = np.zeros((5, len(settings.RAW_FEATURE_COLUMNS)))
+        model_service.preproc.transform.return_value = np.zeros((5, len(RAW_FEATURE_COLUMNS)))
 
         # 2. Mock the XGBoost Model
         model_service.model = MagicMock()
@@ -27,7 +27,7 @@ def mock_fraud_model():
         model_service.model.predict.return_value = np.array([0.90] * 5)
 
         # 3. Set required properties
-        model_service.feature_names = settings.RAW_FEATURE_COLUMNS
+        model_service.feature_names = RAW_FEATURE_COLUMNS
         model_service.threshold = 0.5
 
         yield model_service
