@@ -1,47 +1,77 @@
-import pytest
-import polars as pl
-import numpy as np
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from aml.models.dataframes import HistoryDataFrameSchema, EnrichedFeaturesSchema
+import numpy as np
+import polars as pl
+import pytest
+
+from aml.models.dataframes import HistoryDataFrameSchema
 from aml.services.feature_engineering import create_features, infer_missing_balances
-from aml.config.settings import settings
 
 
 @pytest.fixture
 def sample_history_df() -> pl.DataFrame:
     """Fixture providing valid historical transactions for feature testing in Polars."""
-    return pl.DataFrame([
-        {
-            "step": 1, "type": "TRANSFER", "amount": 100.0,
-            "nameOrig": "ACC_A", "oldbalanceOrg": 500.0, "newbalanceOrig": 400.0,
-            "nameDest": "ACC_B", "oldbalanceDest": 50.0, "newbalanceDest": 150.0,
-            "timestamp": datetime(2026, 4, 12, 9, 0, tzinfo=timezone.utc)
-        },
-        {
-            "step": 2, "type": "TRANSFER", "amount": 200.0,
-            "nameOrig": "ACC_A", "oldbalanceOrg": 400.0, "newbalanceOrig": 200.0,
-            "nameDest": "ACC_B", "oldbalanceDest": 150.0, "newbalanceDest": 350.0,
-            "timestamp": datetime(2026, 4, 12, 10, 0, tzinfo=timezone.utc)
-        },
-        {
-            "step": 3, "type": "CASH_OUT", "amount": 50.0,
-            "nameOrig": "ACC_C", "oldbalanceOrg": 1000.0, "newbalanceOrig": 950.0,
-            "nameDest": "ACC_B", "oldbalanceDest": 350.0, "newbalanceDest": 400.0,
-            "timestamp": datetime(2026, 4, 12, 11, 0, tzinfo=timezone.utc)
-        }
-    ])
+    return pl.DataFrame(
+        [
+            {
+                "step": 1,
+                "type": "TRANSFER",
+                "amount": 100.0,
+                "nameOrig": "ACC_A",
+                "oldbalanceOrg": 500.0,
+                "newbalanceOrig": 400.0,
+                "nameDest": "ACC_B",
+                "oldbalanceDest": 50.0,
+                "newbalanceDest": 150.0,
+                "timestamp": datetime(2026, 4, 12, 9, 0, tzinfo=UTC),
+            },
+            {
+                "step": 2,
+                "type": "TRANSFER",
+                "amount": 200.0,
+                "nameOrig": "ACC_A",
+                "oldbalanceOrg": 400.0,
+                "newbalanceOrig": 200.0,
+                "nameDest": "ACC_B",
+                "oldbalanceDest": 150.0,
+                "newbalanceDest": 350.0,
+                "timestamp": datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+            },
+            {
+                "step": 3,
+                "type": "CASH_OUT",
+                "amount": 50.0,
+                "nameOrig": "ACC_C",
+                "oldbalanceOrg": 1000.0,
+                "newbalanceOrig": 950.0,
+                "nameDest": "ACC_B",
+                "oldbalanceDest": 350.0,
+                "newbalanceDest": 400.0,
+                "timestamp": datetime(2026, 4, 12, 11, 0, tzinfo=UTC),
+            },
+        ]
+    )
 
 
 @pytest.fixture
 def sample_current_df() -> pl.DataFrame:
     """Fixture providing a valid incoming transaction in Polars."""
-    return pl.DataFrame([{
-        "step": 4, "type": "TRANSFER", "amount": 150.0,
-        "nameOrig": "ACC_A", "oldbalanceOrg": 0.0, "newbalanceOrig": 0.0,
-        "nameDest": "ACC_B", "oldbalanceDest": 0.0, "newbalanceDest": 0.0,
-        "timestamp": datetime(2026, 4, 12, 12, 0, tzinfo=timezone.utc)
-    }])
+    return pl.DataFrame(
+        [
+            {
+                "step": 4,
+                "type": "TRANSFER",
+                "amount": 150.0,
+                "nameOrig": "ACC_A",
+                "oldbalanceOrg": 0.0,
+                "newbalanceOrig": 0.0,
+                "nameDest": "ACC_B",
+                "oldbalanceDest": 0.0,
+                "newbalanceDest": 0.0,
+                "timestamp": datetime(2026, 4, 12, 12, 0, tzinfo=UTC),
+            }
+        ]
+    )
 
 
 def test_history_dataframe_schema_validation(sample_history_df):
@@ -85,7 +115,7 @@ def test_create_features_end_to_end(sample_history_df, sample_current_df):
 
     # Engineered features for ACC_A must reflect historical transactions
     assert last_row["sender_total_trans_count"] == 2  # ACC_A had 2 previous transactions
-    assert last_row["pair_transaction_count"] == 2   # Pair ACC_A -> ACC_B appeared twice before
+    assert last_row["pair_transaction_count"] == 2  # Pair ACC_A -> ACC_B appeared twice before
     assert last_row["sender_avg_trans_amount_10_steps"] is not None
     assert not np.isnan(last_row["sender_avg_trans_amount_10_steps"])
     assert not np.isinf(last_row["sender_total_avg_ratio_log1p"])

@@ -1,10 +1,10 @@
-import pytest
-import numpy as np
-import polars as pl
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from aml.services.inference import FraudDetectionModel
+import numpy as np
+import pytest
+
 from aml.models.dataframes import RAW_FEATURE_COLUMNS
+from aml.services.inference import FraudDetectionModel
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def mock_fraud_model():
     Creates an instance of FraudDetectionModel but intercepts its __init__
     so it doesn't try to download models from MLflow during tests.
     """
-    with patch.object(FraudDetectionModel, '_load_model') as mock_load:
+    with patch.object(FraudDetectionModel, "_load_model"):
         model_service = FraudDetectionModel()
 
         # 1. Mock the Preprocessor

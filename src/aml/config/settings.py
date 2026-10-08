@@ -1,14 +1,14 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 from urllib.parse import quote_plus
+
 from pydantic import MySQLDsn, RedisDsn, SecretStr, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # Verhindert UserWarning auf Systemen ohne gemountetes /run/secrets Verzeichnis (reine pathlib-Prüfung)
-SECRETS_DIR: Optional[Path] = Path("/run/secrets") if Path("/run/secrets").is_dir() else None
+SECRETS_DIR: Path | None = Path("/run/secrets") if Path("/run/secrets").is_dir() else None
 
 
 class Settings(BaseSettings):
@@ -23,13 +23,13 @@ class Settings(BaseSettings):
     mysql_password: SecretStr = SecretStr("aml_secure_password")
     mysql_db: str = "aml_db"
     # Optionale direkte Übergabe (z.B. aus Docker Compose oder Cloud-Umgebungen)
-    DATABASE_URL: Optional[MySQLDsn] = None
+    DATABASE_URL: MySQLDsn | None = None
 
     # --- REDIS CONFIGURATION ---
     redis_host: str = "localhost"
     redis_port: int = 6379
-    redis_password: Optional[SecretStr] = None
-    REDIS_URL: Optional[RedisDsn] = None
+    redis_password: SecretStr | None = None
+    REDIS_URL: RedisDsn | None = None
 
     # --- BUSINESS & ML CONFIGURATIONS ---
     START_STEP: int = 743
@@ -65,7 +65,9 @@ class Settings(BaseSettings):
         if self.REDIS_URL is None:
             if self.redis_password and self.redis_password.get_secret_value():
                 encoded_password = quote_plus(self.redis_password.get_secret_value())
-                self.REDIS_URL = RedisDsn(f"redis://:{encoded_password}@{self.redis_host}:{self.redis_port}/0")
+                self.REDIS_URL = RedisDsn(
+                    f"redis://:{encoded_password}@{self.redis_host}:{self.redis_port}/0"
+                )
             else:
                 self.REDIS_URL = RedisDsn(f"redis://{self.redis_host}:{self.redis_port}/0")
 

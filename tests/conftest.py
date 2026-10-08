@@ -1,25 +1,41 @@
 import os
+
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/aml")
 
-import pytest
 import pandera.polars as pa
 import polars as pl
+import pytest
+
 from aml.models.dataframes import NUMERIC_FEATURES
 
+pytest_plugins = ["tests.test_e2e_pipeline"]
 
 # 1. Define the statistical rules for your AML data in Polars
-aml_schema = pa.DataFrameSchema({
-    "type": pa.Column(str, pa.Check.isin(["TRANSFER", "CASH_OUT", "CASH_IN", "PAYMENT", "DEBIT"])),
-    "amount": pa.Column(float, pa.Check.ge(0)),
-    "oldbalanceOrg": pa.Column(float, pa.Check.ge(0)),
-    "newbalanceOrig": pa.Column(float, pa.Check.ge(0)),
-    "oldbalanceDest": pa.Column(float, pa.Check.ge(0)),
-    "newbalanceDest": pa.Column(float, pa.Check.ge(0)),
-    **{col: pa.Column(float) for col in NUMERIC_FEATURES if col not in [
-        "amount", "oldbalanceOrg", "newbalanceOrig", "oldbalanceDest", "newbalanceDest"
-    ]}
-})
+aml_schema = pa.DataFrameSchema(
+    {
+        "type": pa.Column(
+            str, pa.Check.isin(["TRANSFER", "CASH_OUT", "CASH_IN", "PAYMENT", "DEBIT"])
+        ),
+        "amount": pa.Column(float, pa.Check.ge(0)),
+        "oldbalanceOrg": pa.Column(float, pa.Check.ge(0)),
+        "newbalanceOrig": pa.Column(float, pa.Check.ge(0)),
+        "oldbalanceDest": pa.Column(float, pa.Check.ge(0)),
+        "newbalanceDest": pa.Column(float, pa.Check.ge(0)),
+        **{
+            col: pa.Column(float)
+            for col in NUMERIC_FEATURES
+            if col
+            not in [
+                "amount",
+                "oldbalanceOrg",
+                "newbalanceOrig",
+                "oldbalanceDest",
+                "newbalanceDest",
+            ]
+        },
+    }
+)
 
 
 @pytest.fixture

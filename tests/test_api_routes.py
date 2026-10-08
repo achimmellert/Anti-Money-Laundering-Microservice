@@ -1,5 +1,6 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from aml.api.main import app
@@ -9,9 +10,8 @@ from aml.services.database import get_db_session
 @pytest.fixture
 def client():
     """FastAPI test client with mocked DB initialization."""
-    with patch("aml.api.lifespan.init_db"):
-        with TestClient(app) as test_client:
-            yield test_client
+    with patch("aml.api.lifespan.init_db"), TestClient(app) as test_client:
+        yield test_client
 
 
 def test_root_endpoint(client):
@@ -28,7 +28,7 @@ def test_submit_transaction_validation_error(client):
         "amount": -50.0,
         "type": "TRANSFER",
         "nameOrig": "C123",
-        "nameDest": "C456"
+        "nameDest": "C456",
     }
     response = client.post("/api/v1/transaction", json=payload)
     assert response.status_code == 422
@@ -40,12 +40,13 @@ def test_submit_transaction_success(client):
         "amount": 250.0,
         "type": "TRANSFER",
         "nameOrig": "C840083671",
-        "nameDest": "C38997010"
+        "nameDest": "C38997010",
     }
 
-    with patch("aml.api.routes.transactions.run_persistence_task.delay") as mock_persist, \
-         patch("aml.api.routes.transactions.chain") as mock_chain:
-
+    with (
+        patch("aml.api.routes.transactions.run_persistence_task.delay") as mock_persist,
+        patch("aml.api.routes.transactions.chain") as mock_chain,
+    ):
         mock_pipeline = MagicMock()
         mock_chain.return_value = mock_pipeline
 

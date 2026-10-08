@@ -1,11 +1,10 @@
-import flet as ft
-import httpx
-import csv
 import asyncio
-from pathlib import Path
+import csv
 import os
 from datetime import datetime
 
+import flet as ft
+import httpx
 
 from aml.config.settings import settings
 
@@ -13,7 +12,9 @@ API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1")
 BASE_DIR = settings.PROJECT_ROOT
 CSV_PATH = BASE_DIR / "data" / "test.csv"
 
-http_client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500, max_keepalive_connections=100))
+http_client = httpx.AsyncClient(
+    limits=httpx.Limits(max_connections=500, max_keepalive_connections=100)
+)
 
 
 class AMLDashboard:
@@ -29,28 +30,40 @@ class AMLDashboard:
 
     def setup_ui(self):
         # --- VIEW 1: Live Monitor ---
-        self.start_button = ft.Button("Test-Transaktionen senden", on_click=self.start_tests, icon=ft.Icons.PLAY_ARROW,
-                                      style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700))
-        self.clear_button = ft.Button("Dashboard leeren", on_click=self.clear_dashboard, icon=ft.Icons.DELETE_SWEEP,
-                                      style=ft.ButtonStyle(color=ft.Colors.RED_400))
+        self.start_button = ft.Button(
+            "Test-Transaktionen senden",
+            on_click=self.start_tests,
+            icon=ft.Icons.PLAY_ARROW,
+            style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700),
+        )
+        self.clear_button = ft.Button(
+            "Dashboard leeren",
+            on_click=self.clear_dashboard,
+            icon=ft.Icons.DELETE_SWEEP,
+            style=ft.ButtonStyle(color=ft.Colors.RED_400),
+        )
         self.progress_text = ft.Text("Warte auf Start...", italic=True)
         self.data_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Event ID")),
-                ft.DataColumn(ft.Text("Sender")),
-                ft.DataColumn(ft.Text("Empfänger")),
-                ft.DataColumn(ft.Text("Betrag", text_align=ft.TextAlign.RIGHT)),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Fraud Score", text_align=ft.TextAlign.RIGHT)),
+                ft.DataColumn(label=ft.Text("Event ID")),
+                ft.DataColumn(label=ft.Text("Sender")),
+                ft.DataColumn(label=ft.Text("Empfänger")),
+                ft.DataColumn(label=ft.Text("Betrag", text_align=ft.TextAlign.RIGHT)),
+                ft.DataColumn(label=ft.Text("Status")),
+                ft.DataColumn(label=ft.Text("Fraud Score", text_align=ft.TextAlign.RIGHT)),
             ],
-            rows=[]
+            rows=[],
         )
         self.view_monitor = ft.Container(
-            content=ft.Column([
-                ft.Row([self.start_button, self.clear_button, self.progress_text]),
-                ft.Column([self.data_table], scroll=ft.ScrollMode.ADAPTIVE, expand=True)
-            ], expand=True),
-            key="monitor", expand=True
+            content=ft.Column(
+                [
+                    ft.Row([self.start_button, self.clear_button, self.progress_text]),
+                    ft.Column([self.data_table], scroll=ft.ScrollMode.ADAPTIVE, expand=True),
+                ],
+                expand=True,
+            ),
+            key="monitor",
+            expand=True,
         )
 
         # --- VIEW 2: User Search ---
@@ -58,41 +71,55 @@ class AMLDashboard:
         self.search_button = ft.Button("Suchen", on_click=self.search_user, icon=ft.Icons.SEARCH)
         self.search_results = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Step")),
-                ft.DataColumn(ft.Text("Typ")),
-                ft.DataColumn(ft.Text("Betrag")),
-                ft.DataColumn(ft.Text("Sender")),
-                ft.DataColumn(ft.Text("Empfänger")),
-                ft.DataColumn(ft.Text("Zeitstempel")),
+                ft.DataColumn(label=ft.Text("Step")),
+                ft.DataColumn(label=ft.Text("Typ")),
+                ft.DataColumn(label=ft.Text("Betrag")),
+                ft.DataColumn(label=ft.Text("Sender")),
+                ft.DataColumn(label=ft.Text("Empfänger")),
+                ft.DataColumn(label=ft.Text("Zeitstempel")),
             ],
-            rows=[]
+            rows=[],
         )
         self.view_search = ft.Container(
-            content=ft.Column([
-                ft.Row([self.search_input, self.search_button]),
-                ft.Column([self.search_results], scroll=ft.ScrollMode.ADAPTIVE, expand=True)
-            ], expand=True),
-            key="search", expand=True
+            content=ft.Column(
+                [
+                    ft.Row([self.search_input, self.search_button]),
+                    ft.Column(
+                        [self.search_results],
+                        scroll=ft.ScrollMode.ADAPTIVE,
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+            key="search",
+            expand=True,
         )
 
         # --- VIEW 3: Dead Letter Queue (Failed Tasks) ---
-        self.dlq_refresh_button = ft.Button("Fehler laden (Refresh)", on_click=self.load_dlq, icon=ft.Icons.REFRESH)
+        self.dlq_refresh_button = ft.Button(
+            "Fehler laden (Refresh)", on_click=self.load_dlq, icon=ft.Icons.REFRESH
+        )
         self.dlq_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("ID")),
-                ft.DataColumn(ft.Text("Zeit")),
-                ft.DataColumn(ft.Text("Task")),
-                ft.DataColumn(ft.Text("Event ID")),
-                ft.DataColumn(ft.Text("Fehlermeldung")),
+                ft.DataColumn(label=ft.Text("ID")),
+                ft.DataColumn(label=ft.Text("Zeit")),
+                ft.DataColumn(label=ft.Text("Task")),
+                ft.DataColumn(label=ft.Text("Event ID")),
+                ft.DataColumn(label=ft.Text("Fehlermeldung")),
             ],
-            rows=[]
+            rows=[],
         )
         self.view_dlq = ft.Container(
-            content=ft.Column([
-                ft.Row([self.dlq_refresh_button]),
-                ft.Column([self.dlq_table], scroll=ft.ScrollMode.ADAPTIVE, expand=True)
-            ], expand=True),
-            key="dlq", expand=True
+            content=ft.Column(
+                [
+                    ft.Row([self.dlq_refresh_button]),
+                    ft.Column([self.dlq_table], scroll=ft.ScrollMode.ADAPTIVE, expand=True),
+                ],
+                expand=True,
+            ),
+            key="dlq",
+            expand=True,
         )
 
         # --- Custom Animated Navigation ---
@@ -100,8 +127,12 @@ class AMLDashboard:
         self.tab_containers = []
 
         for i, (text, icon) in enumerate(
-                [("Live Streaming", ft.Icons.MONITOR_HEART), ("User History", ft.Icons.PERSON_SEARCH),
-                 ("Failed Tasks", ft.Icons.BUG_REPORT)]):
+            [
+                ("Live Streaming", ft.Icons.MONITOR_HEART),
+                ("User History", ft.Icons.PERSON_SEARCH),
+                ("Failed Tasks", ft.Icons.BUG_REPORT),
+            ]
+        ):
             tab = ft.Container(
                 content=ft.Row([ft.Icon(icon), ft.Text(text, weight=ft.FontWeight.BOLD, size=16)]),
                 padding=ft.Padding.symmetric(vertical=10, horizontal=20),
@@ -109,7 +140,9 @@ class AMLDashboard:
                 ink=True,  # Erzeugt einen schönen Wellen-Effekt beim Klicken
                 border_radius=ft.BorderRadius.only(top_left=5, top_right=5),
                 on_click=lambda e, idx=i: self.switch_view(idx),
-                animate=ft.Animation(300, ft.AnimationCurve.FAST_OUT_SLOWIN)  # Weicher Rahmen-Übergang
+                animate=ft.Animation(
+                    300, ft.AnimationCurve.FAST_OUT_SLOWIN
+                ),  # Weicher Rahmen-Übergang
             )
             self.tab_containers.append(tab)
             self.tabs_row.controls.append(tab)
@@ -122,14 +155,19 @@ class AMLDashboard:
             reverse_duration=400,
             switch_in_curve=ft.AnimationCurve.EASE_IN_OUT,
             switch_out_curve=ft.AnimationCurve.EASE_IN_OUT,
-            expand=True
+            expand=True,
         )
 
         self.page.add(
-            ft.Text("AML Fraud Detection - Dashboard", size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400),
+            ft.Text(
+                "AML Fraud Detection - Dashboard",
+                size=28,
+                weight=ft.FontWeight.BOLD,
+                color=ft.Colors.BLUE_400,
+            ),
             self.tabs_row,
-            ft.Divider(height=1, color=ft.Colors.WHITE24),
-            self.content_area
+            ft.Divider(height=1, color=ft.Colors.WHITE_24),
+            self.content_area,
         )
         self.switch_view(0)  # Initiiert das erste Styling
 
@@ -142,8 +180,8 @@ class AMLDashboard:
                 tab.content.controls[1].color = ft.Colors.BLUE_400
             else:
                 tab.border = ft.Border.only(bottom=ft.BorderSide(3, ft.Colors.TRANSPARENT))
-                tab.content.controls[0].color = ft.Colors.WHITE54
-                tab.content.controls[1].color = ft.Colors.WHITE54
+                tab.content.controls[0].color = ft.Colors.WHITE_54
+                tab.content.controls[1].color = ft.Colors.WHITE_54
 
         # 2. Update des Inhalts (Löst die Fade-Animation aus)
         if idx == 0:
@@ -169,14 +207,16 @@ class AMLDashboard:
             resp = await http_client.get(f"{API_URL}/user-history/{user_id}")
             if resp.status_code == 200:
                 for r in resp.json():
-                    row = ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(str(r["step"]))),
-                        ft.DataCell(ft.Text(r["type"])),
-                        ft.DataCell(ft.Text(f"{r['amount']:.2f}")),
-                        ft.DataCell(ft.Text(r["nameOrig"])),
-                        ft.DataCell(ft.Text(r["nameDest"])),
-                        ft.DataCell(ft.Text(r["timestamp"][:19] if r["timestamp"] else "")),
-                    ])
+                    row = ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(r["step"]))),
+                            ft.DataCell(ft.Text(r["type"])),
+                            ft.DataCell(ft.Text(f"{r['amount']:.2f}")),
+                            ft.DataCell(ft.Text(r["nameOrig"])),
+                            ft.DataCell(ft.Text(r["nameDest"])),
+                            ft.DataCell(ft.Text(r["timestamp"][:19] if r["timestamp"] else "")),
+                        ]
+                    )
                     self.search_results.rows.append(row)
         except Exception as ex:
             print("Suchfehler:", ex)
@@ -210,13 +250,17 @@ class AMLDashboard:
             if resp.status_code == 200:
                 for r in resp.json():
                     error_text = str(r.get("error_msg", ""))
-                    row = ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(str(r.get("id", "")))),
-                        ft.DataCell(ft.Text(str(r.get("created_at", ""))[:19])),
-                        ft.DataCell(ft.Text(str(r.get("task_name", "")))),
-                        ft.DataCell(ft.Text(str(r.get("event_id", ""))[:8] + "...")),
-                        ft.DataCell(ft.Text(error_text[:100] + ("..." if len(error_text) > 100 else ""))),
-                    ])
+                    row = ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(r.get("id", "")))),
+                            ft.DataCell(ft.Text(str(r.get("created_at", ""))[:19])),
+                            ft.DataCell(ft.Text(str(r.get("task_name", "")))),
+                            ft.DataCell(ft.Text(str(r.get("event_id", ""))[:8] + "...")),
+                            ft.DataCell(
+                                ft.Text(error_text[:100] + ("..." if len(error_text) > 100 else ""))
+                            ),
+                        ]
+                    )
                     self.dlq_table.rows.append(row)
         except Exception as ex:
             print("DLQ Ladefehler:", ex)
@@ -261,11 +305,11 @@ class AMLDashboard:
             self.page.update()
             return
 
-        with open(CSV_PATH, newline='', encoding="utf-8") as f:
+        with open(CSV_PATH, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             count = 0
             for row in reader:
-                #if count >= 200:
+                # if count >= 200:
                 #    break
 
                 payload = {
@@ -273,7 +317,7 @@ class AMLDashboard:
                     "nameOrig": row["nameOrig"],
                     "nameDest": row["nameDest"],
                     "type": row["type"],
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
                 }
 
                 for attempt in range(3):
@@ -309,7 +353,7 @@ class AMLDashboard:
 
 
 async def main(page: ft.Page):
-    app = AMLDashboard(page)
+    AMLDashboard(page)
 
 
 if __name__ == "__main__":

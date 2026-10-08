@@ -1,28 +1,29 @@
+from datetime import UTC, datetime
+
 import redis
-import msgspec
 from loguru import logger as log
-from datetime import datetime, timezone
-from typing import List, Optional, Any
-from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, select
+from sqlalchemy.orm import Session
 
-from aml.models.db_models import (TransactionsHistory,
-                                  TransactionsState,
-                                  TransactionStatus,
-                                  SuspiciousTransactions,
-                                  DeadLetterQueue)
-from aml.models.schemas import TransactionInternal
-from aml.models.structs import HistoryStruct, HISTORY_DECODER, HISTORY_ENCODER
-from aml.services.database import SessionLocal
 from aml.config.settings import settings
+from aml.models.db_models import (
+    DeadLetterQueue,
+    SuspiciousTransactions,
+    TransactionsHistory,
+    TransactionsState,
+    TransactionStatus,
+)
+from aml.models.schemas import TransactionInternal
+from aml.models.structs import HISTORY_DECODER, HISTORY_ENCODER, HistoryStruct
+from aml.services.database import SessionLocal
 
-
-redis_client = redis.Redis.from_url(settings.REDIS_URL.unicode_string(), decode_responses=False)
+redis_client = redis.Redis.from_url(settings.redis_uri, decode_responses=False)
 
 
 # --- INTERNAL HELPERS ---
 
-def _get_cached_history(session: Session, user_id: str, limit: int) -> List[HistoryStruct]:
+
+def _get_cached_history(session: Session, user_id: str, limit: int) -> list[HistoryStruct]:
     """Tries Redis first, falls back to SQL, and ensures consistent return types."""
     key = f"hist:{user_id}"
 
@@ -30,15 +31,25 @@ def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Hist
     try:
         raw_data = redis_client.lrange(key, 0, limit - 1)
         if raw_data:
-            return HISTORY_DECODER.decode(b"[" + b",".join(raw_data) + b"]")
+            data_bytes = [
+                r if isinstance(r, (bytes, bytearray, memoryview)) else str(r).encode()
+                for r in raw_data
+            ]
+            return HISTORY_DECODER.decode(b"[" + b",".join(data_bytes) + b"]")
     except Exception as e:
         log.warning(f"Redis Read Error for {user_id}: {e}")
 
     # 2. SQL Fallback
     stmt = (
         select(TransactionsHistory)
-        .where(or_(TransactionsHistory.nameOrig == user_id, TransactionsHistory.nameDest == user_id))
-        .order_by(desc(TransactionsHistory.step)).limit(limit)
+        .where(
+            or_(
+                TransactionsHistory.nameOrig == user_id,
+                TransactionsHistory.nameDest == user_id,
+            )
+        )
+        .order_by(desc(TransactionsHistory.step))
+        .limit(limit)
     )
     rows = session.execute(stmt).scalars().all()
 
@@ -57,8 +68,9 @@ def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Hist
             oldbalanceDest=float(r.oldbalanceDest or 0),
             newbalanceDest=float(r.newbalanceDest or 0),
             event_id=str(r.event_id) if r.event_id else None,
-            timestamp=r.timestamp
-        ) for r in rows
+            timestamp=r.timestamp,
+        )
+        for r in rows
     ]
 
     # 4. Cache Hydration
@@ -78,22 +90,26 @@ def _get_cached_history(session: Session, user_id: str, limit: int) -> List[Hist
 
 # --- PUBLIC API ---
 
-def get_account_history(session: Session, nameOrig: str, nameDest: str, limit: int = 200) -> List[HistoryStruct]:
+
+def get_account_history(
+    session: Session, nameOrig: str, nameDest: str, limit: int = 200
+) -> list[HistoryStruct]:
     sender_rows = _get_cached_history(session, nameOrig, limit)
     receiver_rows = _get_cached_history(session, nameDest, limit)
     return list(sender_rows) + list(receiver_rows)
 
 
-def get_user_history(session: Session, user_id: str, limit: int = 100) -> List[HistoryStruct]:
+def get_user_history(session: Session, user_id: str, limit: int = 100) -> list[HistoryStruct]:
     return _get_cached_history(session, user_id, limit)
 
 
-def update_transaction_state(session: Session,
-                             event_id: str,
-                             status: TransactionStatus | str,
-                             prob: float | None,
-                             payload: TransactionInternal | None = None
-                             ):
+def update_transaction_state(
+    session: Session,
+    event_id: str,
+    status: TransactionStatus | str,
+    prob: float | None,
+    payload: TransactionInternal | None = None,
+):
     # Safe Enum Coercion
     if isinstance(status, str):
         status = TransactionStatus(status)
@@ -115,17 +131,17 @@ def update_transaction_state(session: Session,
 
     if ts_row:
         # Prevent PENDING or PERSISTED from overwriting a finished decision (SUCCESS / BLOCKED)
-        if status in [TransactionStatus.PENDING, TransactionStatus.PERSISTED] and ts_row.status in [
-            TransactionStatus.SUCCESS,
-            TransactionStatus.BLOCKED
-        ]:
+        if status in [
+            TransactionStatus.PENDING,
+            TransactionStatus.PERSISTED,
+        ] and ts_row.status in [TransactionStatus.SUCCESS, TransactionStatus.BLOCKED]:
             return
 
         ts_row.status = status
         ts_row.fraud_probability = prob
 
         if status in [TransactionStatus.SUCCESS, TransactionStatus.BLOCKED]:
-            ts_row.decided_at = datetime.now(timezone.utc)
+            ts_row.decided_at = datetime.now(UTC)
         # No commit here (ensuring Unit of Work pattern)
 
 
@@ -142,7 +158,7 @@ def save_history_transaction(session: Session, payload: TransactionInternal):
         newbalanceOrig=payload.newbalanceOrig,
         oldbalanceDest=payload.oldbalanceDest,
         newbalanceDest=payload.newbalanceDest,
-        timestamp=payload.timestamp
+        timestamp=payload.timestamp,
     )
 
     session.add(hist)
@@ -150,7 +166,7 @@ def save_history_transaction(session: Session, payload: TransactionInternal):
     try:
         struct_data = HistoryStruct(
             step=payload.step,
-            type=payload.type,
+            type=payload.type.value if hasattr(payload.type, "value") else str(payload.type),
             amount=payload.amount,
             nameOrig=payload.nameOrig,
             nameDest=payload.nameDest,
@@ -159,7 +175,7 @@ def save_history_transaction(session: Session, payload: TransactionInternal):
             oldbalanceDest=payload.oldbalanceDest,
             newbalanceDest=payload.newbalanceDest,
             event_id=str(payload.event_id),  # cast to string if needed
-            timestamp=payload.timestamp
+            timestamp=payload.timestamp,
         )
         encoded_obj = HISTORY_ENCODER.encode(struct_data)
 
@@ -175,7 +191,9 @@ def save_history_transaction(session: Session, payload: TransactionInternal):
         log.warning(f"Redis Live-Update Error: {e}")
 
 
-def save_suspicious_transaction(session: Session, payload: TransactionInternal, event_id: str, plot_path: str):
+def save_suspicious_transaction(
+    session: Session, payload: TransactionInternal, event_id: str, plot_path: str
+):
     """Logs flagged transactions. Pydantic guarantees clean data structure."""
     sus = SuspiciousTransactions(
         event_id=event_id,
@@ -184,7 +202,7 @@ def save_suspicious_transaction(session: Session, payload: TransactionInternal, 
         nameDest=payload.nameDest,
         type=payload.type,
         plot_path=plot_path,
-        timestamp=payload.timestamp
+        timestamp=payload.timestamp,
     )
     session.add(sus)
 
@@ -199,7 +217,7 @@ def save_to_dlq(task_name: str, event_id: str, payload: dict, error_msg: str):
                 task_name=task_name,
                 event_id=event_id,
                 payload=payload,
-                error_msg=str(error_msg)
+                error_msg=str(error_msg),
             )
             session.add(entry)
             session.commit()

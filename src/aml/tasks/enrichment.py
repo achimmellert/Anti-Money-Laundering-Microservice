@@ -1,17 +1,14 @@
-import polars as pl
 import pandera.polars as pa
+import polars as pl
 from loguru import logger as log
-from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
 
 from aml.celery_app import celery_app
-from aml.services.database import SessionLocal
+from aml.models.dataframes import HistoryDataFrameSchema
 from aml.models.schemas import TransactionInternal
-from aml.models.dataframes import HistoryDataFrameSchema, EnrichedFeaturesSchema
+from aml.services.database import SessionLocal
 from aml.services.feature_engineering import create_features, infer_missing_balances
 from aml.utils.db_helpers import get_account_history, save_to_dlq
-from aml.config.settings import settings
-
 
 HIST_SCHEMA = {
     "step": pl.Int64,
@@ -49,22 +46,29 @@ def run_enrichment_task(self, data: dict, event_id: str):
     with SessionLocal() as session:
         try:
             # 2. High-Speed History Retrieval (List of msgspec Structs)
-            rows = get_account_history(
-                session,
-                current_tx.nameOrig,
-                current_tx.nameDest,
-                limit=200
-            ) or []
+            rows = (
+                get_account_history(session, current_tx.nameOrig, current_tx.nameDest, limit=200)
+                or []
+            )
 
             # 3. Construct Historical DataFrame
             if rows:
                 rows_data = [
                     {
-                        "step": r.step, "type": r.type, "amount": float(r.amount),
-                        "nameOrig": r.nameOrig, "oldbalanceOrg": float(r.oldbalanceOrg), "newbalanceOrig": float(r.newbalanceOrig),
-                        "nameDest": r.nameDest, "oldbalanceDest": float(r.oldbalanceDest), "newbalanceDest": float(r.newbalanceDest),
-                        "timestamp": r.timestamp, "event_id": r.event_id
-                    } for r in rows]
+                        "step": r.step,
+                        "type": r.type,
+                        "amount": float(r.amount),
+                        "nameOrig": r.nameOrig,
+                        "oldbalanceOrg": float(r.oldbalanceOrg),
+                        "newbalanceOrig": float(r.newbalanceOrig),
+                        "nameDest": r.nameDest,
+                        "oldbalanceDest": float(r.oldbalanceDest),
+                        "newbalanceDest": float(r.newbalanceDest),
+                        "timestamp": r.timestamp,
+                        "event_id": r.event_id,
+                    }
+                    for r in rows
+                ]
 
                 hist_df = pl.DataFrame(rows_data, schema=HIST_SCHEMA_WITH_ID)
                 hist_df = (
@@ -73,7 +77,10 @@ def run_enrichment_task(self, data: dict, event_id: str):
                     # transaction leak into its own history window (point-in-time correctness)
                     .filter(
                         (pl.col("step") < current_tx.step)
-                        & (pl.col("event_id").is_null() | (pl.col("event_id") != str(current_tx.event_id)))
+                        & (
+                            pl.col("event_id").is_null()
+                            | (pl.col("event_id") != str(current_tx.event_id))
+                        )
                     )
                     .unique(maintain_order=True)
                     .drop("event_id")
@@ -81,13 +88,19 @@ def run_enrichment_task(self, data: dict, event_id: str):
                 )
 
             else:
-                log.info(f"New User context: No history for {current_tx.nameOrig} or {current_tx.nameDest}.")
+                log.info(
+                    f"New User context: No history for {current_tx.nameOrig} or {current_tx.nameDest}."
+                )
                 # Generate empty DataFrame with exact required columns
                 hist_df = pl.DataFrame(schema=HIST_SCHEMA)
 
             # 4. Construct Current Transaction DataFrame (Pydantic already guaranteed types)
             cur_dict = current_tx.model_dump(mode="python", exclude={"event_id"})
-            cur_dict["type"] = cur_dict["type"].value if hasattr(cur_dict["type"], "value") else str(cur_dict["type"])
+            cur_dict["type"] = (
+                cur_dict["type"].value
+                if hasattr(cur_dict["type"], "value")
+                else str(cur_dict["type"])
+            )
             cur_df = pl.DataFrame([cur_dict], schema=HIST_SCHEMA)
 
             # 5. Pandera Validation
@@ -125,11 +138,11 @@ def run_enrichment_task(self, data: dict, event_id: str):
             if self.request.retries >= self.max_retries:
                 save_to_dlq("enrichment_db_failure", event_id, data, str(e))
             else:
-                raise self.retry(exc=e, countdown=5)
+                raise self.retry(exc=e, countdown=5) from e
 
         except Exception as e:
             log.error(f"Unexpected Engineering Error [{event_id}]: {e}")
             if self.request.retries >= self.max_retries:
                 save_to_dlq("enrichment_logic_failure", event_id, data, str(e))
             else:
-                raise self.retry(exc=e, countdown=5)
+                raise self.retry(exc=e, countdown=5) from e

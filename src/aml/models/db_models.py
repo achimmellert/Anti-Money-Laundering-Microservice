@@ -1,17 +1,29 @@
-from sqlalchemy import String, Float, DateTime, BigInteger, Integer, UUID, BOOLEAN, Index, Text, JSON
-from sqlalchemy import Enum as SQLAlchemyEnum
-from sqlalchemy.orm import registry, Mapped, mapped_column
+from datetime import UTC, datetime
 from enum import Enum
-from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import (
+    BOOLEAN,
+    JSON,
+    BigInteger,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy import Enum as SQLAlchemyEnum
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-Base = registry().generate_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 def utc_now():
     """Helper to ensure all default timestamps are strictly UTC."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TransactionStatus(Enum):
@@ -19,6 +31,7 @@ class TransactionStatus(Enum):
     SUCCESS = "SUCCESS"
     BLOCKED = "BLOCKED"
     PERSISTED = "PERSISTED"
+
 
 class TransactionType(Enum):
     TRANSFER = "TRANSFER"
@@ -31,7 +44,11 @@ class TransactionType(Enum):
 class TransactionsState(Base):
     __tablename__ = "transactions_state"
 
-    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     event_id: Mapped[str] = mapped_column(String(36), index=True, unique=True)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -39,16 +56,22 @@ class TransactionsState(Base):
     nameDest: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     step: Mapped[int] = mapped_column(Integer)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    status: Mapped[TransactionStatus] = mapped_column(SQLAlchemyEnum(TransactionStatus), default=TransactionStatus.PENDING)
-    fraud_probability: Mapped[float] = mapped_column(Float, nullable=True)
-    decided_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    status: Mapped[TransactionStatus] = mapped_column(
+        SQLAlchemyEnum(TransactionStatus), default=TransactionStatus.PENDING
+    )
+    fraud_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class SuspiciousTransactions(Base):
     __tablename__ = "suspicious_transactions"
 
-    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     event_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
@@ -62,10 +85,16 @@ class SuspiciousTransactions(Base):
 class TransactionsHistory(Base):
     __tablename__ = "transaction_history"
 
-    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     step: Mapped[int] = mapped_column(Integer, index=True)
-    type: Mapped[TransactionType] = mapped_column(SQLAlchemyEnum(TransactionType), nullable=False, index=True)
+    type: Mapped[TransactionType] = mapped_column(
+        SQLAlchemyEnum(TransactionType), nullable=False, index=True
+    )
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     nameOrig: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     nameDest: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
@@ -80,17 +109,21 @@ class TransactionsHistory(Base):
 class MonitoringInference(Base):
     __tablename__ = "monitoring_inference"
 
-    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     y_pred_proba: Mapped[float] = mapped_column(Float, nullable=False)
     y_true: Mapped[bool] = mapped_column(BOOLEAN, nullable=True)
-    decision: Mapped[TransactionStatus] = mapped_column(SQLAlchemyEnum(TransactionStatus), nullable=False)
+    decision: Mapped[TransactionStatus] = mapped_column(
+        SQLAlchemyEnum(TransactionStatus), nullable=False
+    )
     features_json: Mapped[dict] = mapped_column(JSON, nullable=False)
 
-    __table_args__ = (
-        Index("ix_monitoring_ts_decision", "timestamp", "decision"),
-    )
+    __table_args__ = (Index("ix_monitoring_ts_decision", "timestamp", "decision"),)
 
 
 class DeadLetterQueue(Base):

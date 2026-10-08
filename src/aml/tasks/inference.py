@@ -1,26 +1,27 @@
 import threading
-from loguru import logger as log
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
+
 import polars as pl
+from celery.signals import worker_init
+from celery_batches import Batches
+from loguru import logger as log
+from pydantic import ValidationError
 from sqlalchemy import insert
 from sqlalchemy.exc import SQLAlchemyError
-from celery_batches import Batches
-from celery.signals import worker_init
-from pydantic import ValidationError
 
 from aml.celery_app import celery_app
+from aml.config.settings import settings
+from aml.models.dataframes import NUMERIC_FEATURES, RAW_FEATURE_COLUMNS
+from aml.models.db_models import MonitoringInference
+from aml.models.schemas import TransactionInternal
 from aml.services.database import SessionLocal
 from aml.services.inference import FraudDetectionModel
 from aml.utils.db_helpers import (
-    update_transaction_state,
     save_suspicious_transaction,
-    save_to_dlq
+    save_to_dlq,
+    update_transaction_state,
 )
-from aml.config.settings import settings
-from aml.models.dataframes import RAW_FEATURE_COLUMNS, NUMERIC_FEATURES
-from aml.models.db_models import MonitoringInference
-from aml.models.schemas import TransactionInternal
-
 
 # Global placeholder for the ML Model (process-wide singleton, see get_model_service)
 model_service = None
@@ -54,7 +55,11 @@ def init_worker_ml_model(sender=None, **kwargs):
     `worker_process_init` (prefork children only), and skips workers that don't need the model.
     """
     try:
-        consumed = set(sender.app.amqp.queues.consume_from or {})
+        consumed = (
+            set(sender.app.amqp.queues.consume_from or {})
+            if sender is not None and hasattr(sender, "app")
+            else set()
+        )
     except AttributeError:
         consumed = set()
 
@@ -117,7 +122,9 @@ def run_inference_task(self, requests):
         valid_data = payload.model_dump(mode="json")
 
         # Extract features from validated payload, falling back to data_dict
-        row = {col: float(valid_data.get(col, data_dict.get(col, 0.0))) for col in NUMERIC_FEATURES}
+        row: dict[str, Any] = {
+            col: float(valid_data.get(col, data_dict.get(col, 0.0))) for col in NUMERIC_FEATURES
+        }
         row["type"] = payload.type.value if hasattr(payload.type, "value") else str(payload.type)
 
         rows.append(row)
@@ -143,8 +150,8 @@ def run_inference_task(self, requests):
 
     with SessionLocal() as session:
         try:
-            for i, (req, event_id, payload, valid_data) in enumerate(events):
-                prob, is_fraud, decision = results[i]
+            for i, (_req, event_id, payload, valid_data) in enumerate(events):
+                prob, _is_fraud, decision = results[i]
 
                 # Pass the strictly-typed Pydantic model
                 update_transaction_state(session, event_id, decision, prob, payload)
@@ -159,13 +166,17 @@ def run_inference_task(self, requests):
                     shap_jobs.append((feature_rows[i], event_id, str(plot_path)))
 
                 # Prepare Bulk Monitoring
-                monitoring_entries.append({
-                    "event_id": event_id,
-                    "timestamp": datetime.now(timezone.utc),
-                    "y_pred_proba": float(prob),
-                    "decision": decision,
-                    "features_json": {k: valid_data[k] for k in RAW_FEATURE_COLUMNS if k in valid_data}
-                })
+                monitoring_entries.append(
+                    {
+                        "event_id": event_id,
+                        "timestamp": datetime.now(UTC),
+                        "y_pred_proba": float(prob),
+                        "decision": decision,
+                        "features_json": {
+                            k: valid_data[k] for k in RAW_FEATURE_COLUMNS if k in valid_data
+                        },
+                    }
+                )
 
             # Final Batch Commit using SQLAlchemy 2.0 insert
             if monitoring_entries:
@@ -177,7 +188,11 @@ def run_inference_task(self, requests):
         except SQLAlchemyError as e:
             session.rollback()
             log.error(f"DB Error in Inference Batch: {e}")
-            _retry_or_dlq([(req, eid, vd) for req, eid, _, vd in events], "inference_db_failure", e)
+            _retry_or_dlq(
+                [(req, eid, vd) for req, eid, _, vd in events],
+                "inference_db_failure",
+                e,
+            )
             return
 
     # Offload SHAP (Async)

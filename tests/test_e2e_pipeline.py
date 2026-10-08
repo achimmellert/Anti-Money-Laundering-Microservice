@@ -1,41 +1,40 @@
+import contextlib
 import os
-import sys
+import tempfile
 import time
 import uuid
-import tempfile
-import contextlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import patch
 
 import numpy as np
 import polars as pl
 import pytest
-import xgboost as xgb
 import shap
+import xgboost as xgb
+from fastapi.testclient import TestClient
 from loguru import logger as log
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from fastapi.testclient import TestClient
 
-from aml.models.db_models import (
-    Base,
-    TransactionsState,
-    TransactionsHistory,
-    MonitoringInference,
-    SuspiciousTransactions,
-    TransactionStatus,
-    TransactionType
-)
-from aml.config.settings import settings
-from aml.models.dataframes import RAW_FEATURE_COLUMNS
 import aml.tasks.enrichment as enrichment_mod
 import aml.tasks.inference as inference_mod
 import aml.tasks.persistence as persistence_mod
 import aml.utils.db_helpers as db_helpers_mod
 from aml.api.main import app
+from aml.config.settings import settings
+from aml.models.dataframes import RAW_FEATURE_COLUMNS
+from aml.models.db_models import (
+    Base,
+    MonitoringInference,
+    SuspiciousTransactions,
+    TransactionsHistory,
+    TransactionsState,
+    TransactionStatus,
+)
 from aml.services.database import get_db_session
 
 # Dedicated persistent log file for E2E pipeline tests
@@ -74,21 +73,25 @@ class PipelineTestLogger:
 
     def __init__(self, test_name: str):
         self.test_name = test_name
-        self.test_start_wall = datetime.now(timezone.utc)
+        self.test_start_wall = datetime.now(UTC)
         self.test_start_perf = time.perf_counter()
         self.steps: list[dict] = []
         log.info(f"╔{'═' * 103}╗")
         log.info(f"║ START TEST: {self.test_name:<89} ║")
-        log.info(f"║ Started At: {self.test_start_wall.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} UTC{' ' * 63} ║")
+        log.info(
+            f"║ Started At: {self.test_start_wall.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} UTC{' ' * 63} ║"
+        )
         log.info(f"╚{'═' * 103}╝")
 
     @contextlib.contextmanager
     def step(self, phase_name: str, **metadata):
         step_id = len(self.steps) + 1
-        start_wall = datetime.now(timezone.utc)
+        start_wall = datetime.now(UTC)
         start_perf = time.perf_counter()
         meta_str = " | ".join(f"{k}={v}" for k, v in metadata.items()) if metadata else ""
-        log.info(f"▶ [STEP {step_id:02d} START] {phase_name} {('(' + meta_str + ')') if meta_str else ''}")
+        log.info(
+            f"▶ [STEP {step_id:02d} START] {phase_name} {('(' + meta_str + ')') if meta_str else ''}"
+        )
 
         status = "SUCCESS"
         error_msg = None
@@ -100,21 +103,23 @@ class PipelineTestLogger:
             raise
         finally:
             end_perf = time.perf_counter()
-            end_wall = datetime.now(timezone.utc)
+            end_wall = datetime.now(UTC)
             duration_ms = (end_perf - start_perf) * 1000.0
             log.info(
                 f"✔ [STEP {step_id:02d} DONE] {phase_name} in {duration_ms:.2f} ms | Status: {status}"
                 + (f" | Error: {error_msg}" if error_msg else "")
             )
-            self.steps.append({
-                "step_id": step_id,
-                "phase": phase_name,
-                "start_time": start_wall.strftime("%H:%M:%S.%f")[:-3],
-                "end_time": end_wall.strftime("%H:%M:%S.%f")[:-3],
-                "duration_ms": duration_ms,
-                "status": status,
-                "metadata": metadata,
-            })
+            self.steps.append(
+                {
+                    "step_id": step_id,
+                    "phase": phase_name,
+                    "start_time": start_wall.strftime("%H:%M:%S.%f")[:-3],
+                    "end_time": end_wall.strftime("%H:%M:%S.%f")[:-3],
+                    "duration_ms": duration_ms,
+                    "status": status,
+                    "metadata": metadata,
+                }
+            )
 
     def finish_and_report(self) -> str:
         total_perf = time.perf_counter() - self.test_start_perf
@@ -165,7 +170,7 @@ class InMemoryRedis:
         lst = self.lists.get(key, [])
         if end == -1:
             return lst[start:]
-        return lst[start:end + 1]
+        return lst[start : end + 1]
 
     def lpush(self, key, *values):
         if key not in self.lists:
@@ -185,7 +190,7 @@ class InMemoryRedis:
             if end == -1:
                 self.lists[key] = self.lists[key][start:]
             else:
-                self.lists[key] = self.lists[key][start:end + 1]
+                self.lists[key] = self.lists[key][start : end + 1]
 
     def exists(self, key):
         return key in self.store or key in self.lists
@@ -233,13 +238,17 @@ class RealPipelineMLModel:
         self.preproc = ColumnTransformer(
             transformers=[
                 ("num", StandardScaler(), numeric_cols),
-                ("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), cat_cols),
+                (
+                    "cat",
+                    OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+                    cat_cols,
+                ),
             ]
         )
 
         # Train a fast 5-tree Booster on synthetic samples
         rng = np.random.default_rng(42)
-        synth_data = {col: rng.random(20) for col in numeric_cols}
+        synth_data: dict[str, Any] = {col: rng.random(20) for col in numeric_cols}
         synth_data["type"] = ["TRANSFER", "CASH_OUT"] * 10
         synth_df = pl.DataFrame(synth_data).select(self.feature_names)
 
@@ -247,7 +256,9 @@ class RealPipelineMLModel:
         y = np.array([1, 0] * 10)
 
         dtrain = xgb.DMatrix(X_trans, label=y, feature_names=self.feature_names)
-        self.model = xgb.train({"max_depth": 2, "objective": "binary:logistic"}, dtrain, num_boost_round=5)
+        self.model = xgb.train(
+            {"max_depth": 2, "objective": "binary:logistic"}, dtrain, num_boost_round=5
+        )
         self.explainer = shap.TreeExplainer(self.model)
         self.threshold = settings.FRAUD_THRESHOLD
         self.forced_proba = forced_proba
@@ -272,14 +283,23 @@ class RealPipelineMLModel:
         return results
 
     def save_shap_barplot(self, raw_features_df: pl.DataFrame, out_path: str):
-        log.info(f"RealPipelineMLModel: Computing SHAP values for {raw_features_df.height} row(s)...")
+        log.info(
+            f"RealPipelineMLModel: Computing SHAP values for {raw_features_df.height} row(s)..."
+        )
         _, X_trans = self._prepare_dmatrix(raw_features_df)
         shap_values = self.explainer.shap_values(X_trans)
 
         import matplotlib.pyplot as plt
+
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        fig, ax = plt.subplots(figsize=(8, 5))
-        shap.summary_plot(shap_values, X_trans, feature_names=self.feature_names, show=False, plot_type="bar")
+        fig, _ax = plt.subplots(figsize=(8, 5))
+        shap.summary_plot(
+            shap_values,
+            X_trans,
+            feature_names=self.feature_names,
+            show=False,
+            plot_type="bar",
+        )
         fig.savefig(out_path, dpi=120, bbox_inches="tight")
         fig.clf()
         plt.close(fig)
@@ -341,7 +361,11 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
     mock_redis = e2e_env["redis"]
 
     # 1. Set up real ML model configured to trigger BLOCKED (fraud_probability >= 0.5)
-    with tlog.step("Setup ML Model & Environment", forced_proba=0.88, threshold=settings.FRAUD_THRESHOLD):
+    with tlog.step(
+        "Setup ML Model & Environment",
+        forced_proba=0.88,
+        threshold=settings.FRAUD_THRESHOLD,
+    ):
         fraud_model = RealPipelineMLModel(forced_proba=0.88)
         monkeypatch.setattr(inference_mod, "model_service", fraud_model)
 
@@ -352,6 +376,7 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
 
         # Intercept async SHAP task to write directly to our temp_dir
         shap_executed = []
+
         def intercept_shap_delay(row_dict, eid, ppath):
             shap_executed.append(expected_plot_path)
             # Execute synchronously to simulate worker processing
@@ -360,7 +385,12 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
         monkeypatch.setattr(inference_mod.generate_shap_task, "delay", intercept_shap_delay)
 
         # 2. Incoming transaction payload
-        with tlog.step("Transaction Payload Intake", event_id=event_id, amount=500000.0, type="TRANSFER"):
+        with tlog.step(
+            "Transaction Payload Intake",
+            event_id=event_id,
+            amount=500000.0,
+            type="TRANSFER",
+        ):
             tx_payload = {
                 "amount": 500000.0,
                 "type": "TRANSFER",
@@ -371,8 +401,8 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
                 "oldbalanceDest": 1000.0,
                 "newbalanceDest": 501000.0,
                 "step": 743,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event_id": event_id
+                "timestamp": datetime.now(UTC).isoformat(),
+                "event_id": event_id,
             }
 
         # --- STEP 1: PERSISTENCE TASK ---
@@ -380,21 +410,25 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
             persistence_mod.run_persistence_task.apply(args=[tx_payload, event_id])
 
         # Verify intermediate persistence state
-        with tlog.step("Intermediate Persistence Audit", event_id=event_id):
-            with session_factory() as sess:
-                state_intermediate = sess.query(TransactionsState).filter_by(event_id=event_id).first()
-                assert state_intermediate is not None
-                assert state_intermediate.status == TransactionStatus.PERSISTED
-                assert state_intermediate.created_at is not None
-                assert state_intermediate.decided_at is None
+        with (
+            tlog.step("Intermediate Persistence Audit", event_id=event_id),
+            session_factory() as sess,
+        ):
+            state_intermediate = sess.query(TransactionsState).filter_by(event_id=event_id).first()
+            assert state_intermediate is not None
+            assert state_intermediate.status == TransactionStatus.PERSISTED
+            assert state_intermediate.created_at is not None
+            assert state_intermediate.decided_at is None
 
-                hist_record = sess.query(TransactionsHistory).filter_by(event_id=event_id).first()
-                assert hist_record is not None
-                assert hist_record.amount == 500000.0
+            hist_record = sess.query(TransactionsHistory).filter_by(event_id=event_id).first()
+            assert hist_record is not None
+            assert hist_record.amount == 500000.0
 
         # --- STEP 2: ENRICHMENT TASK ---
         with tlog.step("Polars Feature Enrichment & Pandera Validation", event_id=event_id):
-            enrichment_output = enrichment_mod.run_enrichment_task.apply(args=[tx_payload, event_id]).result
+            enrichment_output = enrichment_mod.run_enrichment_task.apply(
+                args=[tx_payload, event_id]
+            ).result
             assert enrichment_output is not None
             assert enrichment_output["event_id"] == event_id
             enriched_row = enrichment_output["data"]
@@ -409,7 +443,10 @@ def test_e2e_pipeline_blocked_transaction_with_shap_report(e2e_env, monkeypatch)
             inference_mod.run_inference_task.run([CeleryBatchRequest(enrichment_output)])
 
         # --- STEP 4: VERIFICATION & AUDIT ---
-        with tlog.step("Explainable AI (SHAP TreeExplainer & Plot Generation)", plot_path=expected_plot_path):
+        with tlog.step(
+            "Explainable AI (SHAP TreeExplainer & Plot Generation)",
+            plot_path=expected_plot_path,
+        ):
             assert len(shap_executed) == 1
             plot_file = shap_executed[0]
             assert os.path.exists(plot_file), f"SHAP plot file does not exist at {plot_file}"
@@ -480,7 +517,9 @@ def test_e2e_pipeline_success_transaction_no_shap(e2e_env, monkeypatch):
         monkeypatch.setattr(inference_mod, "model_service", legit_model)
 
     shap_calls = []
-    monkeypatch.setattr(inference_mod.generate_shap_task, "delay", lambda *a, **kw: shap_calls.append(a))
+    monkeypatch.setattr(
+        inference_mod.generate_shap_task, "delay", lambda *a, **kw: shap_calls.append(a)
+    )
 
     event_id = str(uuid.uuid4())
     with tlog.step("Transaction Payload Intake", event_id=event_id, amount=25.0, type="PAYMENT"):
@@ -494,8 +533,8 @@ def test_e2e_pipeline_success_transaction_no_shap(e2e_env, monkeypatch):
             "oldbalanceDest": 1000.0,
             "newbalanceDest": 1025.0,
             "step": 743,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "event_id": event_id
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_id": event_id,
         }
 
     # Execute full pipeline
@@ -503,31 +542,37 @@ def test_e2e_pipeline_success_transaction_no_shap(e2e_env, monkeypatch):
         persistence_mod.run_persistence_task.apply(args=[tx_payload, event_id])
 
     with tlog.step("Polars Feature Enrichment", event_id=event_id):
-        enrichment_output = enrichment_mod.run_enrichment_task.apply(args=[tx_payload, event_id]).result
+        enrichment_output = enrichment_mod.run_enrichment_task.apply(
+            args=[tx_payload, event_id]
+        ).result
 
     with tlog.step("XGBoost Batch ML Inference (Legitimate)", event_id=event_id):
         inference_mod.run_inference_task.run([CeleryBatchRequest(enrichment_output)])
 
     # Verification
-    with tlog.step("Database Audit & Negative Check", event_id=event_id):
-        with session_factory() as sess:
-            final_state = sess.query(TransactionsState).filter_by(event_id=event_id).first()
-            assert final_state is not None
-            assert final_state.status == TransactionStatus.SUCCESS
-            assert final_state.fraud_probability == pytest.approx(0.05, abs=1e-3)
-            assert final_state.decided_at is not None
-            assert final_state.decided_at >= final_state.created_at
+    with (
+        tlog.step("Database Audit & Negative Check", event_id=event_id),
+        session_factory() as sess,
+    ):
+        final_state = sess.query(TransactionsState).filter_by(event_id=event_id).first()
+        assert final_state is not None
+        assert final_state.status == TransactionStatus.SUCCESS
+        assert final_state.fraud_probability == pytest.approx(0.05, abs=1e-3)
+        assert final_state.decided_at is not None
+        assert final_state.decided_at >= final_state.created_at
 
-            # Verify Monitoring Log
-            monitoring = sess.query(MonitoringInference).filter_by(event_id=event_id).first()
-            assert monitoring is not None
-            assert monitoring.decision == TransactionStatus.SUCCESS
-            assert monitoring.y_pred_proba == pytest.approx(0.05, abs=1e-3)
+        # Verify Monitoring Log
+        monitoring = sess.query(MonitoringInference).filter_by(event_id=event_id).first()
+        assert monitoring is not None
+        assert monitoring.decision == TransactionStatus.SUCCESS
+        assert monitoring.y_pred_proba == pytest.approx(0.05, abs=1e-3)
 
-            # Verify that legitimate transactions DO NOT generate SHAP reports or suspicious records
-            assert len(shap_calls) == 0, "SHAP report should not be generated for legitimate transactions"
-            suspicious = sess.query(SuspiciousTransactions).filter_by(event_id=event_id).first()
-            assert suspicious is None, "Legitimate transaction should not be in SuspiciousTransactions"
+        # Verify that legitimate transactions DO NOT generate SHAP reports or suspicious records
+        assert len(shap_calls) == 0, (
+            "SHAP report should not be generated for legitimate transactions"
+        )
+        suspicious = sess.query(SuspiciousTransactions).filter_by(event_id=event_id).first()
+        assert suspicious is None, "Legitimate transaction should not be in SuspiciousTransactions"
 
     tlog.finish_and_report()
 
@@ -559,59 +604,70 @@ def test_e2e_api_to_pipeline_and_status_query(e2e_env, monkeypatch):
         monkeypatch.setattr(inference_mod.generate_shap_task, "delay", lambda *a, **kw: None)
 
     dispatched = {}
+
     def mock_persist_delay(data, event_id):
         dispatched["persist"] = (data, event_id)
 
     class MockPipeline:
         def __init__(self, data, event_id):
             dispatched["enrichment"] = (data, event_id)
+
         def apply_async(self):
             pass
 
-    monkeypatch.setattr("aml.api.routes.transactions.run_persistence_task.delay", mock_persist_delay)
-    monkeypatch.setattr("aml.api.routes.transactions.chain", lambda enrich, infer: MockPipeline(*enrich.args, **enrich.kwargs))
+    monkeypatch.setattr(
+        "aml.api.routes.transactions.run_persistence_task.delay", mock_persist_delay
+    )
+    monkeypatch.setattr(
+        "aml.api.routes.transactions.chain",
+        lambda enrich, infer: MockPipeline(*enrich.args, **enrich.kwargs),
+    )
 
-    with patch_lifespan():
-        with TestClient(app) as client:
-            # 1. Submit transaction via API
-            tx_input = {
-                "amount": 75000.0,
-                "type": "CASH_OUT",
-                "nameOrig": "C_CLIENT_999",
-                "nameDest": "M_MERCHANT_888"
-            }
-            with tlog.step("FastAPI POST /api/v1/transaction", amount=75000.0, type="CASH_OUT"):
-                resp = client.post("/api/v1/transaction", json=tx_input)
-                assert resp.status_code == 202
-                resp_data = resp.json()
-                event_id = resp_data["event_id"]
-                assert resp_data["status"] == "received"
+    with patch_lifespan(), TestClient(app) as client:
+        # 1. Submit transaction via API
+        tx_input = {
+            "amount": 75000.0,
+            "type": "CASH_OUT",
+            "nameOrig": "C_CLIENT_999",
+            "nameDest": "M_MERCHANT_888",
+        }
+        with tlog.step("FastAPI POST /api/v1/transaction", amount=75000.0, type="CASH_OUT"):
+            resp = client.post("/api/v1/transaction", json=tx_input)
+            assert resp.status_code == 202
+            resp_data = resp.json()
+            event_id = resp_data["event_id"]
+            assert resp_data["status"] == "received"
 
-            # 2. Run persistence and enrichment from intercepted payload
-            with tlog.step("Worker Pipeline Execution", event_id=event_id):
-                payload_data, _ = dispatched["persist"]
-                persistence_mod.run_persistence_task.apply(args=[payload_data, event_id])
-                enrich_out = enrichment_mod.run_enrichment_task.apply(args=[payload_data, event_id]).result
-                inference_mod.run_inference_task.run([CeleryBatchRequest(enrich_out)])
+        # 2. Run persistence and enrichment from intercepted payload
+        with tlog.step("Worker Pipeline Execution", event_id=event_id):
+            payload_data, _ = dispatched["persist"]
+            persistence_mod.run_persistence_task.apply(args=[payload_data, event_id])
+            enrich_out = enrichment_mod.run_enrichment_task.apply(
+                args=[payload_data, event_id]
+            ).result
+            inference_mod.run_inference_task.run([CeleryBatchRequest(enrich_out)])
 
-            # 3. Query transaction status via API
-            with tlog.step("FastAPI GET /api/v1/transaction-status/{id}", event_id=event_id):
-                status_resp = client.get(f"/api/v1/transaction-status/{event_id}")
-                assert status_resp.status_code == 200
-                status_data = status_resp.json()
-                assert status_data["event_id"] == event_id
-                assert status_data["status"] == "BLOCKED"
-                assert status_data["fraud_probability"] == pytest.approx(0.91, abs=1e-3)
-                assert status_data["decided_at"] is not None
+        # 3. Query transaction status via API
+        with tlog.step("FastAPI GET /api/v1/transaction-status/{id}", event_id=event_id):
+            status_resp = client.get(f"/api/v1/transaction-status/{event_id}")
+            assert status_resp.status_code == 200
+            status_data = status_resp.json()
+            assert status_data["event_id"] == event_id
+            assert status_data["status"] == "BLOCKED"
+            assert status_data["fraud_probability"] == pytest.approx(0.91, abs=1e-3)
+            assert status_data["decided_at"] is not None
 
-            # 4. Query user history via API
-            with tlog.step("FastAPI GET /api/v1/user-history/{user_id}", user_id=tx_input["nameOrig"]):
-                history_resp = client.get(f"/api/v1/user-history/{tx_input['nameOrig']}")
-                assert history_resp.status_code == 200
-                history_data = history_resp.json()
-                assert len(history_data) >= 1
-                assert history_data[0]["nameOrig"] == tx_input["nameOrig"]
-                assert history_data[0]["amount"] == 75000.0
+        # 4. Query user history via API
+        with tlog.step(
+            "FastAPI GET /api/v1/user-history/{user_id}",
+            user_id=tx_input["nameOrig"],
+        ):
+            history_resp = client.get(f"/api/v1/user-history/{tx_input['nameOrig']}")
+            assert history_resp.status_code == 200
+            history_data = history_resp.json()
+            assert len(history_data) >= 1
+            assert history_data[0]["nameOrig"] == tx_input["nameOrig"]
+            assert history_data[0]["amount"] == 75000.0
 
     app.dependency_overrides.clear()
     tlog.finish_and_report()
@@ -627,7 +683,7 @@ def test_e2e_log_file_inspectable():
     file_size = os.path.getsize(E2E_LOG_FILE)
     assert file_size > 0, "Log file is empty"
 
-    with open(E2E_LOG_FILE, "r", encoding="utf-8") as f:
+    with open(E2E_LOG_FILE, encoding="utf-8") as f:
         log_content = f.read()
 
     # Verify key markers in the persistent log file

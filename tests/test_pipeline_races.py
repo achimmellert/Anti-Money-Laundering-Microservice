@@ -1,14 +1,15 @@
 import uuid
-from datetime import datetime, timezone
-import pytest
+from datetime import UTC, datetime
 
 import aml.tasks.enrichment as enrichment_mod
-import aml.tasks.persistence as persistence_mod
 import aml.tasks.inference as inference_mod
-from tests.test_e2e_pipeline import CeleryBatchRequest, RealPipelineMLModel, e2e_env
+import aml.tasks.persistence as persistence_mod
+from tests.test_e2e_pipeline import CeleryBatchRequest, RealPipelineMLModel
 
 
-def _create_tx_payload(step: int, name_orig: str = "C_USER_RACE_1", name_dest: str = "M_MERCHANT_RACE_1"):
+def _create_tx_payload(
+    step: int, name_orig: str = "C_USER_RACE_1", name_dest: str = "M_MERCHANT_RACE_1"
+):
     event_id = str(uuid.uuid4())
     return event_id, {
         "amount": 250.0,
@@ -16,7 +17,7 @@ def _create_tx_payload(step: int, name_orig: str = "C_USER_RACE_1", name_dest: s
         "nameOrig": name_orig,
         "nameDest": name_dest,
         "step": step,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event_id": event_id,
     }
 
@@ -73,13 +74,12 @@ def test_none_chain_input_does_not_crash_batch_inference(e2e_env, monkeypatch):
     monkeypatch.setattr(inference_mod, "model_service", fake_model)
 
     _, valid_payload = _create_tx_payload(step=3000, name_orig="C_USER_RACE_C")
-    valid_enrichment = enrichment_mod.run_enrichment_task.apply(args=[valid_payload, valid_payload["event_id"]]).result
+    valid_enrichment = enrichment_mod.run_enrichment_task.apply(
+        args=[valid_payload, valid_payload["event_id"]]
+    ).result
 
     # Batch contains one failed (None) request and one valid request
-    batch_requests = [
-        CeleryBatchRequest(None),
-        CeleryBatchRequest(valid_enrichment)
-    ]
+    batch_requests = [CeleryBatchRequest(None), CeleryBatchRequest(valid_enrichment)]
 
     # Must process without raising AttributeError: 'NoneType' object has no attribute 'get'
     inference_mod.run_inference_task.run(batch_requests)
