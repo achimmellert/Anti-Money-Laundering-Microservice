@@ -24,7 +24,7 @@ class AMLDashboard:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 20
 
-        self.poll_semaphore = asyncio.Semaphore(10)
+        self.poll_semaphore = asyncio.Semaphore(50)
 
         self.setup_ui()
 
@@ -36,6 +36,8 @@ class AMLDashboard:
             icon=ft.Icons.PLAY_ARROW,
             style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700),
         )
+        self.tx_count_input = ft.TextField(value="1000", label="Anzahl", width=95, dense=True)
+        self.tx_rate_input = ft.TextField(value="100", label="Rate (tx/s)", width=110, dense=True)
         self.clear_button = ft.Button(
             "Dashboard leeren",
             on_click=self.clear_dashboard,
@@ -57,7 +59,17 @@ class AMLDashboard:
         self.view_monitor = ft.Container(
             content=ft.Column(
                 [
-                    ft.Row([self.start_button, self.clear_button, self.progress_text]),
+                    ft.Row(
+                        [
+                            self.start_button,
+                            self.tx_count_input,
+                            self.tx_rate_input,
+                            self.clear_button,
+                            self.progress_text,
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
+                    ),
                     ft.Column([self.data_table], scroll=ft.ScrollMode.ADAPTIVE, expand=True),
                 ],
                 expand=True,
@@ -305,49 +317,79 @@ class AMLDashboard:
             self.page.update()
             return
 
+        try:
+            max_records = max(1, int(self.tx_count_input.value.strip()))
+        except Exception:
+            max_records = 1000
+
+        try:
+            rate = max(1.0, float(self.tx_rate_input.value.strip()))
+        except Exception:
+            rate = 100.0
+
+        interval = 1.0 / rate
+        self.progress_text.value = f"Sende {max_records} Transaktionen mit {rate:.0f} tx/s..."
+        self.page.update()
+
         with open(CSV_PATH, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             count = 0
+            start_time = asyncio.get_event_loop().time()
+
             for row in reader:
-                # if count >= 200:
-                #    break
+                if count >= max_records:
+                    break
 
                 payload = {
                     "amount": float(row["amount"]),
                     "nameOrig": row["nameOrig"],
                     "nameDest": row["nameDest"],
                     "type": row["type"],
+                    "oldbalanceOrg": float(row.get("oldbalanceOrg", 0.0)),
+                    "newbalanceOrig": float(row.get("newbalanceOrig", 0.0)),
+                    "oldbalanceDest": float(row.get("oldbalanceDest", 0.0)),
+                    "newbalanceDest": float(row.get("newbalanceDest", 0.0)),
                     "timestamp": datetime.now().isoformat(),
                 }
 
-                for attempt in range(3):
-                    try:
-                        resp = await http_client.post(f"{API_URL}/transaction", json=payload)
-                        if resp.status_code in (200, 202):
-                            event_id = resp.json()["event_id"]
+                try:
+                    resp = await http_client.post(f"{API_URL}/transaction", json=payload)
+                    if resp.status_code in (200, 202):
+                        event_id = resp.json().get("event_id", "")
+                        row_cells = [
+                            ft.DataCell(ft.Text(event_id[:8] + "...")),
+                            ft.DataCell(ft.Text(payload["nameOrig"])),
+                            ft.DataCell(ft.Text(payload["nameDest"])),
+                            ft.DataCell(ft.Text(f"{payload['amount']:.2f}")),
+                            ft.DataCell(ft.Text("PENDING", color=ft.Colors.AMBER_400)),
+                            ft.DataCell(ft.Text("...")),
+                        ]
+                        self.data_table.rows.insert(0, ft.DataRow(cells=row_cells))
+                        if len(self.data_table.rows) > 150:
+                            self.data_table.rows.pop()
 
-                            row_cells = [
-                                ft.DataCell(ft.Text(event_id[:8] + "...")),
-                                ft.DataCell(ft.Text(payload["nameOrig"])),
-                                ft.DataCell(ft.Text(payload["nameDest"])),
-                                ft.DataCell(ft.Text(f"{payload['amount']:.2f}")),
-                                ft.DataCell(ft.Text("PENDING", color=ft.Colors.AMBER_400)),
-                                ft.DataCell(ft.Text("...")),
-                            ]
-                            self.data_table.rows.insert(0, ft.DataRow(cells=row_cells))
-                            self.page.update()
-
-                            asyncio.create_task(self.poll_status(event_id, row_cells))
-                            break
-                    except Exception as ex:
-                        if attempt == 2:
-                            print("API Fehler:", ex)
-                        await asyncio.sleep(0.5)
+                        asyncio.create_task(self.poll_status(event_id, row_cells))
+                except Exception as ex:
+                    print("API Fehler:", ex)
 
                 count += 1
-                await asyncio.sleep(0.02)
 
-        self.progress_text.value = f"{count} Transaktionen gesendet. ML-Berechnungen laufen..."
+                # Throttle UI re-renders for fluid 100 tx/s streaming performance
+                if count % 10 == 0 or count == max_records:
+                    self.progress_text.value = (
+                        f"Gesendet: {count}/{max_records} ({rate:.0f} tx/s)..."
+                    )
+                    self.page.update()
+
+                # Drift-free token bucket timing
+                target_next = start_time + (count * interval)
+                delay = target_next - asyncio.get_event_loop().time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+        self.progress_text.value = (
+            f"{count} Transaktionen gesendet ({rate:.0f} tx/s). ML-Berechnungen laufen..."
+        )
         self.start_button.disabled = False
         self.page.update()
 
