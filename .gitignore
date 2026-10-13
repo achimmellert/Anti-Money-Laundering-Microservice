@@ -57,7 +57,12 @@ cover/
 
 # Django stuff:
 *.log
-local_settings.py
+# Databases (SQLite / local DB files)
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
 db.sqlite3
 db.sqlite3-journal
 
@@ -129,6 +134,7 @@ __pypackages__/
 
 # Celery stuff
 celerybeat-schedule
+celerybeat-schedule.*
 celerybeat.pid
 
 # Redis
@@ -195,14 +201,12 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer,
-#   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
 
-# Ruff stuff:
+# Ruff & Pyrefly linters/typecheckers:
 .ruff_cache/
+.pyrefly/
+.pyrefly_cache/
 
 # PyPI configuration file
 .pypirc
@@ -221,7 +225,23 @@ __marimo__/
 # Jupyter+Testdateien
 testings.ipynb
 test.py
-ml_models
-data
-src/data
-mlflow_artifacts
+
+# Machine Learning, MLflow & Pipeline Artifacts
+ml_models/
+mlruns/
+mlflow_artifacts/
+mlflow.db
+mlflow.db*
+
+# Runtime data, generated plots & logs
+data/
+src/data/
+plots/
+logs/
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
