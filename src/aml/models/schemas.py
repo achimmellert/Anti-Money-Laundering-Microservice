@@ -24,6 +24,20 @@ class TransactionCreate(TransactionBase):
         default_factory=lambda: datetime.now(UTC),
         examples=["2026-04-12T09:30:00Z"],
     )
+    oldbalanceOrg: float = Field(
+        default=0.0, description="Kontostand Sender vor Transaktion", examples=[237642.64]
+    )
+    newbalanceOrig: float = Field(
+        default=0.0, description="Kontostand Sender nach Transaktion", examples=[0.0]
+    )
+    oldbalanceDest: float = Field(
+        default=0.0, description="Kontostand Empfänger vor Transaktion", examples=[113161.91]
+    )
+    newbalanceDest: float = Field(
+        default=0.0, description="Kontostand Empfänger nach Transaktion", examples=[350804.55]
+    )
+
+    model_config = ConfigDict(extra="allow")
 
 
 # --- INTERNAL SYSTEM PAYLOAD ---
@@ -35,11 +49,6 @@ class TransactionInternal(TransactionCreate):
 
     event_id: UUID4
     step: int
-
-    oldbalanceOrg: float = 0.0
-    newbalanceOrig: float = 0.0
-    oldbalanceDest: float = 0.0
-    newbalanceDest: float = 0.0
 
     model_config = ConfigDict(extra="allow")
 

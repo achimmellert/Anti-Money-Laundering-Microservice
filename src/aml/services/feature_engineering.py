@@ -90,6 +90,13 @@ def create_features(df: pl.DataFrame) -> pl.DataFrame:
     Generates rolling and expanding features over the historical transaction window using Polars.
     Enforces strict data contracts via Pandera runtime validation before returning.
     """
+    has_orig_idx = "_orig_idx" in df.columns
+    if not has_orig_idx:
+        df = df.with_row_index("_orig_idx")
+
+    if "timestamp" not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Datetime).alias("timestamp"))
+
     # --- SENDER FEATURES ---
     df = df.sort(["nameOrig", "step"])
 
@@ -233,8 +240,10 @@ def create_features(df: pl.DataFrame) -> pl.DataFrame:
         .drop("_rec_hist_avg")
     )
 
-    # Sort back to standard step order so the current transaction lands cleanly at index [-1]
-    df = df.sort("step")
+    # Restore exact input row order to prevent feature-label misalignment
+    df = df.sort("_orig_idx")
+    if not has_orig_idx:
+        df = df.drop("_orig_idx")
 
     # Extract final features specified by the schema contracts
     final_cols = RAW_FEATURE_COLUMNS + METADATA_COLUMNS
