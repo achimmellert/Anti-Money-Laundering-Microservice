@@ -33,6 +33,13 @@ except (ImportError, ModuleNotFoundError):
 import sys
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
@@ -128,6 +135,7 @@ def resolve_mlflow_uri(uri: str | None = None) -> str:
 def train_xgboost(
     data_path: str | None = None,
     n_trials: int = 15,
+    sample_size: int = 250000,
     device: str | None = None,
     tracking_uri: str = settings.MLFLOW_TRACKING_URI,
     experiment_name: str = "AML_Fraud_Detection",
@@ -150,6 +158,22 @@ def train_xgboost(
     if os.path.exists(resolved_path):
         log.info(f"Loading raw dataset from {resolved_path}...")
         raw_df = pl.read_csv(resolved_path)
+        if sample_size and sample_size > 0 and len(raw_df) > sample_size:
+            log.info(
+                f"Subsampling {sample_size} records while preserving all positive fraud cases..."
+            )
+            if "isFraud" in raw_df.columns:
+                frauds = raw_df.filter(pl.col("isFraud") == 1)
+                n_non_fraud = max(1, sample_size - len(frauds))
+                non_frauds = raw_df.filter(pl.col("isFraud") == 0).sample(
+                    n=min(n_non_fraud, len(raw_df.filter(pl.col("isFraud") == 0))), seed=42
+                )
+                raw_df = pl.concat([frauds, non_frauds]).sample(fraction=1.0, shuffle=True, seed=42)
+            else:
+                raw_df = raw_df.sample(n=sample_size, seed=42)
+            log.info(
+                f"Sampled dataset: {len(raw_df)} rows ({raw_df['isFraud'].sum() if 'isFraud' in raw_df.columns else 0} frauds)."
+            )
     else:
         log.warning(f"Dataset not found at {resolved_path}. Generating synthetic benchmark data.")
         raw_df = generate_benchmark_data(num_rows=2000)
@@ -263,35 +287,7 @@ def train_xgboost(
     log.info(f"Test ROC-AUC: {test_roc_auc:.4f}")
     log.info(f"Latency:      {latency_ms:.2f} ms / sample")
 
-    # 8. MLflow Logging & Model Registration
-    with mlflow.start_run(run_name="XGBoost_Optuna_Best") as run:
-        mlflow.log_params(best_params)
-        mlflow.log_params(
-            {
-                "algorithm": "xgboost",
-                "device": chosen_device,
-                "n_trials": n_trials,
-                "num_features": len(final_feature_names),
-            }
-        )
-        mlflow.log_metrics(
-            {
-                "pr_auc": test_pr_auc,
-                "roc_auc": test_roc_auc,
-                "brier_score": test_brier,
-                "latency_ms": latency_ms,
-            }
-        )
-
-        model_info = mlflow.xgboost.log_model(
-            xgb_model=final_clf.get_booster(),
-            artifact_path="xgboost-model",
-            registered_model_name=register_as,
-        )
-        run_id = run.info.run_id
-        log.info(f"XGBoost run logged to MLflow [Run ID: {run_id}]")
-
-    # 9. Optionally update local ml_models directory
+    # 8. Optionally update local ml_models directory
     if save_local_artifacts:
         os.makedirs(settings.PROJECT_ROOT / "ml_models", exist_ok=True)
         final_clf.get_booster().save_model(str(settings.MODEL_PATH))
@@ -299,9 +295,60 @@ def train_xgboost(
         np.save(str(settings.FEATNAMES_PATH), np.array(final_feature_names))
         log.info(f"Synchronized local model artifacts to {settings.PROJECT_ROOT / 'ml_models'}")
 
+    # 9. MLflow Logging & Model Registration
+    run_id = None
+    model_uri = None
+    try:
+        with mlflow.start_run(run_name="XGBoost_Optuna_Best") as run:
+            run_id = run.info.run_id
+            mlflow.log_params(best_params)
+            mlflow.log_params(
+                {
+                    "algorithm": "xgboost",
+                    "device": chosen_device,
+                    "n_trials": n_trials,
+                    "num_features": len(final_feature_names),
+                }
+            )
+            mlflow.log_metrics(
+                {
+                    "pr_auc": test_pr_auc,
+                    "roc_auc": test_roc_auc,
+                    "brier_score": test_brier,
+                    "latency_ms": latency_ms,
+                }
+            )
+
+            model_info = mlflow.xgboost.log_model(
+                xgb_model=final_clf.get_booster(),
+                artifact_path="xgboost-model",
+                registered_model_name=register_as,
+            )
+            model_uri = model_info.model_uri
+            log.info(f"XGBoost run logged to MLflow [Run ID: {run_id}]")
+
+            if register_as:
+                try:
+                    client = mlflow.tracking.MlflowClient()
+                    latest_v = client.get_latest_versions(register_as)[-1].version
+                    client.set_registered_model_alias(register_as, "champion", latest_v)
+                    client.transition_model_version_stage(
+                        name=register_as,
+                        version=latest_v,
+                        stage="Production",
+                        archive_existing_versions=True,
+                    )
+                    log.info(
+                        f"MLflow model '{register_as}' v{latest_v} tagged as @champion and Production stage."
+                    )
+                except Exception as e:
+                    log.warning(f"Could not update MLflow model alias/stage: {e}")
+    except Exception as e:
+        log.warning(f"MLflow logging encountered a non-fatal error: {e}")
+
     return {
         "run_id": run_id,
-        "model_uri": model_info.model_uri,
+        "model_uri": model_uri,
         "pr_auc": test_pr_auc,
         "roc_auc": test_roc_auc,
         "brier_score": test_brier,
@@ -315,6 +362,12 @@ def main():
     parser = argparse.ArgumentParser(description="Train and optimize XGBoost model for AML.")
     parser.add_argument("--data-path", type=str, default=None, help="Path to raw training CSV")
     parser.add_argument("--trials", type=int, default=15, help="Number of Optuna trials")
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=250000,
+        help="Max samples to train on while preserving all frauds (0 for full dataset)",
+    )
     parser.add_argument("--device", type=str, default=None, help="Device ('cpu' or 'cuda')")
     parser.add_argument("--tracking-uri", type=str, default=settings.MLFLOW_TRACKING_URI)
     parser.add_argument(
@@ -325,6 +378,7 @@ def main():
     results = train_xgboost(
         data_path=args.data_path,
         n_trials=args.trials,
+        sample_size=args.sample_size,
         device=args.device,
         tracking_uri=args.tracking_uri,
         save_local_artifacts=args.sync_local,
