@@ -1,13 +1,14 @@
 from loguru import logger as log
+
 from aml.celery_app import celery_app
 from aml.models.db_models import TransactionStatus
+from aml.models.schemas import TransactionInternal
 from aml.services.database import SessionLocal
 from aml.utils.db_helpers import (
-    update_transaction_state,
     save_history_transaction,
-    save_to_dlq
+    save_to_dlq,
+    update_transaction_state,
 )
-from aml.models.schemas import TransactionInternal
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -32,7 +33,7 @@ def run_persistence_task(self, data: dict, event_id: str):
                 event_id,
                 status=TransactionStatus.PERSISTED,
                 prob=0.0,
-                payload=internal_tx
+                payload=internal_tx,
             )
 
             # 3. Save to 'History'
@@ -44,14 +45,14 @@ def run_persistence_task(self, data: dict, event_id: str):
 
         except Exception as e:
             session.rollback()
-            log.error(f"Persistence DB operation failed for {event_id}: {str(e)}")
+            log.error(f"Persistence DB operation failed for {event_id}: {e!s}")
 
             # Exponential backoff: 5s, 10s, 20s...
-            retry_countdown = 5 * (2 ** self.request.retries)
+            retry_countdown = 5 * (2**self.request.retries)
 
             if self.request.retries >= self.max_retries:
                 log.critical(f"FATAL: Max retries reached for {event_id}. Moving to DLQ.")
                 save_to_dlq("persistence", event_id, data, str(e))
             else:
                 log.info(f"Retrying task in {retry_countdown}s...")
-                raise self.retry(exc=e, countdown=retry_countdown)
+                raise self.retry(exc=e, countdown=retry_countdown) from e
