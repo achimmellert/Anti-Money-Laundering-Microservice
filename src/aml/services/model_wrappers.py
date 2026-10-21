@@ -3,30 +3,37 @@ PyTorch Model. Not used in production code yet.
 """
 
 import numpy as np
+
 try:
     import pandas as pd
 except ImportError:
     pd = None
-from sklearn.base import BaseEstimator, ClassifierMixin
-from pytorch_tabular import TabularModel
-from pytorch_tabular.config import DataConfig, OptimizerConfig, TrainerConfig
-from pytorch_tabular.models import CategoryEmbeddingModelConfig
 from optuna.integration import PyTorchLightningPruningCallback
+
+try:
+    from pytorch_tabular import TabularModel
+    from pytorch_tabular.config import DataConfig, OptimizerConfig, TrainerConfig
+    from pytorch_tabular.models import CategoryEmbeddingModelConfig
+except ImportError:
+    TabularModel = None  # type: ignore
+    DataConfig = OptimizerConfig = TrainerConfig = None  # type: ignore
+    CategoryEmbeddingModelConfig = None  # type: ignore
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 class SklearnPyTorchWrapper(BaseEstimator, ClassifierMixin):
     """Sklearn-compatible wrapper"""
 
     def __init__(
-            self,
-            continuous_cols,
-            categorical_cols=None,
-            layers="64-32",
-            dropout=0.2,
-            learning_rate=1e-3,
-            epochs=15,
-            batch_size=512,
-            trial=None
+        self,
+        continuous_cols,
+        categorical_cols=None,
+        layers="64-32",
+        dropout=0.2,
+        learning_rate=1e-3,
+        epochs=15,
+        batch_size=512,
+        trial=None,
     ):
         self.continuous_cols = continuous_cols
         self.categorical_cols = categorical_cols if categorical_cols is not None else []
@@ -70,7 +77,7 @@ class SklearnPyTorchWrapper(BaseEstimator, ClassifierMixin):
             continuous_cols=self.continuous_cols,
             categorical_cols=self.categorical_cols,
             normalize_continuous_features=True,
-            continuous_feature_transform="yeo-johnson"
+            continuous_feature_transform="yeo-johnson",
         )
 
         model_config = CategoryEmbeddingModelConfig(
@@ -78,7 +85,7 @@ class SklearnPyTorchWrapper(BaseEstimator, ClassifierMixin):
             layers=self.layers,
             activation="ReLU",
             dropout=self.dropout,
-            learning_rate=self.learning_rate
+            learning_rate=self.learning_rate,
         )
 
         trainer_config = TrainerConfig(
@@ -97,7 +104,7 @@ class SklearnPyTorchWrapper(BaseEstimator, ClassifierMixin):
             model_config=model_config,
             optimizer_config=OptimizerConfig(),
             trainer_config=trainer_config,
-            verbose=False
+            verbose=False,
         )
 
         self.tabular_model.fit(train=train_df, validation=val_df)
