@@ -1,24 +1,25 @@
 import uuid
-from loguru import logger as log
+
+from celery import chain
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, desc, delete
+from loguru import logger as log
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
-from celery import chain
 
-from aml.models.schemas import (TransactionCreate,
-                                TransactionStatusResponse,
-                                TransactionInternal,
-                                TransactionAcceptedResponse)
-from aml.models.db_models import TransactionsState, DeadLetterQueue
-from aml.services.database import get_db_session
-from aml.utils.db_helpers import get_user_history, redis_client
 from aml.config.settings import settings
-from aml.tasks.persistence import run_persistence_task
+from aml.models.db_models import DeadLetterQueue, TransactionsState
+from aml.models.schemas import (
+    TransactionAcceptedResponse,
+    TransactionCreate,
+    TransactionInternal,
+    TransactionStatusResponse,
+)
+from aml.services.database import get_db_session
 from aml.tasks.enrichment import run_enrichment_task
 from aml.tasks.inference import run_inference_task
-from aml.celery_app import celery_app
-
+from aml.tasks.persistence import run_persistence_task
+from aml.utils.db_helpers import get_user_history, redis_client
 
 router = APIRouter()
 
@@ -35,16 +36,16 @@ def get_next_step() -> int:
         return int(settings.START_STEP)
 
 
-@router.post("/transaction", status_code=status.HTTP_202_ACCEPTED, response_model=TransactionAcceptedResponse)
+@router.post(
+    "/transaction",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TransactionAcceptedResponse,
+)
 def submit_transaction(transaction: TransactionCreate):
     event_id = str(uuid.uuid4())
     step_val = get_next_step()
 
-    internal_tx = TransactionInternal(
-        **transaction.model_dump(),
-        event_id=event_id,
-        step=step_val
-    )
+    internal_tx = TransactionInternal(**transaction.model_dump(), event_id=event_id, step=step_val)
 
     # Serialize for Celery (mode="json") since Celery use a standard JSON serializer
     celery_payload = internal_tx.model_dump(mode="json")
@@ -57,7 +58,7 @@ def submit_transaction(transaction: TransactionCreate):
         # 2) inference-worker
         inference_task_pipeline = chain(
             run_enrichment_task.s(data=celery_payload, event_id=event_id),
-            run_inference_task.s()
+            run_inference_task.s(),
         )
         inference_task_pipeline.apply_async()
 
@@ -65,12 +66,12 @@ def submit_transaction(transaction: TransactionCreate):
 
     except Exception as e:
         log.error(f"FATAL: Failed to queue transaction {event_id}: {e}")
-        raise HTTPException(status_code=500, detail="Error queuing transaction")
+        raise HTTPException(status_code=500, detail="Error queuing transaction") from e
 
     return {
         "event_id": event_id,
         "status": "received",
-        "message": "Transaction processing initiated."
+        "message": "Transaction processing initiated.",
     }
 
 
@@ -94,21 +95,24 @@ def clear_transaction_state(db: Session = Depends(get_db_session)):
         return {"message": "TransactionState cleared successfully."}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/user-history/{user_id}")
 def user_history(user_id: str, db: Session = Depends(get_db_session)):
-    rows = get_user_history(db, user_id) # last 100 entries
+    rows = get_user_history(db, user_id)  # last 100 entries
 
-    return [{
-        "step": r.step,
-        "type": r.type,
-        "amount": r.amount,
-        "nameOrig": r.nameOrig,
-        "nameDest": r.nameDest,
-        "timestamp": r.timestamp.isoformat() if r.timestamp else None
-    } for r in rows]
+    return [
+        {
+            "step": r.step,
+            "type": r.type,
+            "amount": r.amount,
+            "nameOrig": r.nameOrig,
+            "nameDest": r.nameDest,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+        }
+        for r in rows
+    ]
 
 
 @router.get("/dlq")
@@ -123,7 +127,7 @@ def get_dead_letter_queue(db: Session = Depends(get_db_session)):
                 "task_name": r.task_name,
                 "event_id": r.event_id,
                 "error_msg": r.error_msg,
-                "created_at": str(r.created_at)
+                "created_at": str(r.created_at),
             }
             for r in results
         ]
