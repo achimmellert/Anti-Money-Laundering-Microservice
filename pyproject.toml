@@ -87,6 +87,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tools/*" = ["E402"]
+"airflow/dags/*" = ["E402"]
 
 
 [tool.ruff.lint.flake8-bugbear]
@@ -101,7 +102,7 @@ extend-immutable-calls = [
 ]
 
 [tool.pyrefly]
-search-path = ["src", "."]
+search-path = ["src", ".", "airflow/dags"]
 project-excludes = [
     "src/aml/services/model_wrappers.py",
     "tools/**",

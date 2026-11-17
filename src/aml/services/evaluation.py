@@ -529,7 +529,12 @@ def compute_threshold_metrics(
             p_arr = precisions[:-1]
             r_arr = recalls[:-1]
             denom = p_arr + r_arr
-            f1_scores = np.where(denom > 0, 2.0 * p_arr * r_arr / denom, 0.0)
+            f1_scores = np.divide(
+                2.0 * p_arr * r_arr,
+                denom,
+                out=np.zeros_like(denom, dtype=np.float64),
+                where=denom > 0,
+            )
             best_idx = int(np.argmax(f1_scores))
             max_f1 = float(f1_scores[best_idx])
             opt_f1_thresh = float(pr_thresholds[best_idx])

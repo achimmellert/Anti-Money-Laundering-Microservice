@@ -251,9 +251,7 @@ def train_xgboost(
                 non_frauds = raw_df.filter(pl.col("isFraud") == 0).sample(
                     n=min(n_non_fraud, len(raw_df.filter(pl.col("isFraud") == 0))), seed=42
                 )
-                raw_df = pl.concat([frauds, non_frauds]).sample(
-                    fraction=1.0, shuffle=True, seed=42
-                )
+                raw_df = pl.concat([frauds, non_frauds]).sample(fraction=1.0, shuffle=True, seed=42)
             else:
                 raw_df = raw_df.sample(n=sample_size, seed=42)
             log.info(
