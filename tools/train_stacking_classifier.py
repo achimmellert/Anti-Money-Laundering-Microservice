@@ -1,10 +1,14 @@
 import logging
 import os
+import sys
+import time
 import warnings
+from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
 import mlflow.xgboost
+import numpy as np
 import optuna
 import polars as pl
 import xgboost as xgb
@@ -16,13 +20,23 @@ except (ImportError, ModuleNotFoundError):
         from optuna.integration.xgboost import XGBoostPruningCallback
     except (ImportError, ModuleNotFoundError):
         XGBoostPruningCallback = None
+
 from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 
+# Ensure project root is in sys.path when invoked directly as a script
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from aml.config.settings import settings
+from aml.services.evaluation import (
+    compare_challenger_vs_champion,
+    evaluate_model_statistically,
+)
 from aml.services.feature_engineering import create_features
 from aml.services.model_wrappers import SklearnPyTorchWrapper
 
@@ -143,7 +157,7 @@ def main():
     )
     best_tabular.fit(X_train, y_train)
 
-    # === EXPERIMENT 3: Stacking Ensemble ===
+    # === EXPERIMENT 3: Stacking Ensemble & Statistical Hypothesis Testing ===
     log.info("--- Starting Experiment 3: Stacking Ensemble ---")
     mlflow.set_experiment("AML_Stacking_Ensemble")
 
@@ -158,23 +172,53 @@ def main():
 
     stacking_clf.fit(X_train, y_train)
 
+    y_test_np = np.asarray(y_test, dtype=np.int64)
+
+    t0_xgb = time.perf_counter()
+    xgb_preds = best_xgb.predict_proba(X_test)[:, 1]
+    xgb_latency_ms = (time.perf_counter() - t0_xgb) * 1000.0 / max(1, len(y_test_np))
+
+    t0_stack = time.perf_counter()
+    test_preds_stack = stacking_clf.predict_proba(X_test)[:, 1]
+    stack_latency_ms = (time.perf_counter() - t0_stack) * 1000.0 / max(1, len(y_test_np))
+
+    stack_eval = evaluate_model_statistically(
+        y_true=y_test_np,
+        y_prob=test_preds_stack,
+        latency_ms=stack_latency_ms,
+        threshold=settings.FRAUD_THRESHOLD,
+    )
+    comparison = compare_challenger_vs_champion(
+        y_true=y_test_np,
+        y_prob_challenger=test_preds_stack,
+        y_prob_champion=xgb_preds,
+        challenger_latency_ms=stack_latency_ms,
+        champion_latency_ms=xgb_latency_ms,
+        threshold=settings.FRAUD_THRESHOLD,
+    )
+
     with mlflow.start_run(run_name="Stacking_XGB_PyTorchTabular"):
         mlflow.log_params({f"xgb_{k}": v for k, v in study_xgb.best_params.items()})
         mlflow.log_params({f"tabular_{k}": v for k, v in study_tabular.best_params.items()})
 
-        test_preds_stack = stacking_clf.predict_proba(X_test)[:, 1]
-        test_pr_auc = average_precision_score(y_test, test_preds_stack)
-
-        mlflow.log_metric("test_pr_auc", test_pr_auc)
-        mlflow.log_metric("test_roc_auc", roc_auc_score(y_test, test_preds_stack))
+        mlflow.log_metric("test_pr_auc", stack_eval.pr_auc)
+        mlflow.log_metric("test_roc_auc", stack_eval.roc_auc)
+        mlflow.log_metrics(comparison.to_mlflow_metrics())
+        mlflow.log_dict(
+            comparison.to_dict(), "evaluation/stacking_vs_xgboost_hypothesis_report.json"
+        )
 
         mlflow.sklearn.log_model(
             stacking_clf,
             "stacking-model",
             registered_model_name="Modern_FraudDetection_Stacking",
         )
-        log.info(f"Stacking Ensemble Test PR-AUC: {test_pr_auc:.4f}")
-        log.info("Finished: Models successfully trained and logged to MLflow.")
+        log.info(
+            f"Stacking Ensemble Test PR-AUC: {stack_eval.pr_auc:.4f} "
+            f"(vs Standalone XGBoost: {comparison.champion_eval.pr_auc:.4f}, "
+            f"Bootstrap p={comparison.hypothesis_tests['bootstrap_pr_auc'].p_value:.4f})"
+        )
+        log.info(f"Hypothesis Gate Summary: {comparison.decision_summary}")
 
 
 if __name__ == "__main__":

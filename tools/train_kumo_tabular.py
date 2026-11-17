@@ -1,6 +1,6 @@
 """
-Kumo Tabular (NVIDIA Foundation Model) Training & In-Context Learning Pipeline
-==============================================================================
+Kumo Tabular (NVIDIA Foundation Model) Training & Statistical Evaluation Pipeline
+=================================================================================
 Implements NVIDIA's KumoTabular tabular foundation model for Anti-Money Laundering.
 
 KumoTabular performs in-context learning on structured transaction data:
@@ -10,10 +10,11 @@ without requiring task-specific backpropagation or gradient updates.
 
 This script:
 1. Loads transaction data and applies schema-verified feature engineering from `aml.services`.
-2. Encodes data into TableTensors and splits into reference context and query evaluation sets.
-3. Runs KumoTabular inference or calibrated zero-shot evaluation.
-4. Packages the in-context model as an MLflow PyFunc model bundle.
-5. Logs metrics (PR-AUC, ROC-AUC, Brier score, latency) and registers to MLflow.
+2. Splits data into a stratified 15% holdout evaluation test set and reference context pool.
+3. Runs KumoTabular inference or calibrated zero-shot evaluation on the holdout test set.
+4. Executes comprehensive statistical evaluation (Bootstrap 95% CIs, ECE/MCE calibration,
+   Spiegelhalter test, Kolmogorov-Smirnov separation test, and Alert Budget Recall@Top-K%).
+5. Packages the in-context model as an MLflow PyFunc model bundle and logs statistical reports.
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ import mlflow.pyfunc
 import numpy as np
 import polars as pl
 from loguru import logger as log
-from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+from mlflow.tracking import MlflowClient
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder
 
 # Ensure project root is in sys.path when invoked directly as a script
 _PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
@@ -40,9 +43,11 @@ if _PROJECT_ROOT not in sys.path:
 
 from aml.config.settings import settings
 from aml.models.dataframes import (
+    CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
     RAW_FEATURE_COLUMNS,
 )
+from aml.services.evaluation import evaluate_model_statistically
 from aml.services.feature_engineering import create_features
 
 # Check for native NVIDIA structured-data-models (sdm)
@@ -156,7 +161,7 @@ class KumoTabularPyFuncModel(mlflow.pyfunc.PythonModel):
         return np.clip(probs, 0.001, 0.999)
 
 
-def generate_benchmark_data(num_rows: int = 1000) -> pl.DataFrame:
+def generate_benchmark_data(num_rows: int = 1500) -> pl.DataFrame:
     """Generates synthetic AML transaction stream if local dataset is missing."""
     log.info(f"Generating {num_rows} synthetic benchmark transactions...")
     rng = np.random.default_rng(42)
@@ -185,8 +190,8 @@ def generate_benchmark_data(num_rows: int = 1000) -> pl.DataFrame:
             "step": steps,
             "type": types,
             "amount": amounts,
-            "nameOrig": [f"C{i:05d}" for i in rng.integers(1, 200, size=num_rows)],
-            "nameDest": [f"M{i:05d}" for i in rng.integers(1, 200, size=num_rows)],
+            "nameOrig": [f"C{i:05d}" for i in rng.integers(1, 250, size=num_rows)],
+            "nameDest": [f"M{i:05d}" for i in rng.integers(1, 250, size=num_rows)],
             "oldbalanceOrg": orig_bal,
             "newbalanceOrig": new_orig,
             "oldbalanceDest": dest_bal,
@@ -223,8 +228,9 @@ def train_kumo_tabular(
     mlflow_tracking_uri: str = "http://localhost:5000",
     experiment_name: str = "AML_Fraud_Detection",
     register_as: str | None = "FraudDetectionModel",
+    n_bootstraps: int = 500,
 ) -> dict[str, Any]:
-    """Executes the full KumoTabular training, evaluation, and MLflow logging cycle."""
+    """Executes the full KumoTabular training, statistical evaluation, and MLflow logging cycle."""
     log.info("=== Starting Kumo Tabular Pipeline ===")
     resolved_uri = resolve_mlflow_uri(mlflow_tracking_uri)
     mlflow.set_tracking_uri(resolved_uri)
@@ -237,27 +243,47 @@ def train_kumo_tabular(
         raw_df = pl.read_csv(resolved_path)
     else:
         log.warning(f"Dataset not found at {resolved_path}. Using benchmark generator.")
-        raw_df = generate_benchmark_data(num_rows=1200)
+        raw_df = generate_benchmark_data(num_rows=2000)
 
     # 2. Unified Feature Engineering (Using single source of truth in aml.services)
     log.info("Applying core feature engineering pipeline...")
+    raw_sorted = raw_df.sort("step")
     features_df = create_features(raw_df)
 
     # Extract target and features
-    target = raw_df["isFraud"].to_numpy()
+    target = raw_sorted["isFraud"].to_numpy()
     available_features = [col for col in RAW_FEATURE_COLUMNS if col in features_df.columns]
+    num_cols = [c for c in NUMERIC_FEATURES if c in available_features]
+    cat_cols = [c for c in CATEGORICAL_FEATURES if c in available_features]
 
     X = features_df.select(available_features)
-    y = pl.Series("isFraud", target)
 
-    # 3. Stratified Context / Evaluation Split
-    X_context, X_query, y_context, y_query = train_test_split(
-        X.to_pandas(), y.to_pandas(), train_size=context_size, random_state=42, stratify=target
+    # 3. Stratified Context / Holdout Test Split (aligned with 15% holdout convention)
+    all_indices = np.arange(len(target))
+    idx_pool, idx_test, y_pool, y_test = train_test_split(
+        all_indices, target, test_size=0.15, random_state=42, stratify=target
     )
 
-    context_full = pl.from_pandas(X_context).with_columns(pl.Series("isFraud", y_context))
-    query_full = pl.from_pandas(X_query)
-    y_test = np.asarray(y_query)
+    if context_size < len(idx_pool):
+        idx_context, _, y_context, _ = train_test_split(
+            idx_pool, y_pool, train_size=context_size, random_state=42, stratify=y_pool
+        )
+    else:
+        idx_context, y_context = idx_pool, y_pool
+
+    context_full = X[idx_context].with_columns(pl.Series("isFraud", y_context))
+    query_full = X[idx_test]
+
+    # Prepare preprocessed matrix for cross-architecture Champion comparison
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), cat_cols),
+            ("num", "passthrough", num_cols),
+        ]
+    )
+    pandas_df = X.to_pandas()
+    preprocessor.fit(pandas_df.iloc[idx_pool])
+    X_test_processed = preprocessor.transform(pandas_df.iloc[idx_test])
 
     # 4. Initialize MLflow PyFunc Wrapper
     pyfunc_model = KumoTabularPyFuncModel(
@@ -270,39 +296,54 @@ def train_kumo_tabular(
     )
     pyfunc_model.load_context()
 
-    # 5. Evaluation & Inference Benchmark
+    # 5. Statistical Evaluation & Inference Benchmark
     t0 = time.perf_counter()
     y_pred_proba = pyfunc_model.predict(context=None, model_input=query_full)
     latency_ms = (time.perf_counter() - t0) * 1000.0 / len(y_test)
 
-    pr_auc = float(average_precision_score(y_test, y_pred_proba))
-    roc_auc = float(roc_auc_score(y_test, y_pred_proba))
-    brier = float(brier_score_loss(y_test, y_pred_proba))
+    eval_report = evaluate_model_statistically(
+        y_true=y_test,
+        y_prob=y_pred_proba,
+        latency_ms=latency_ms,
+        threshold=settings.FRAUD_THRESHOLD,
+        n_bootstraps=n_bootstraps,
+        confidence_level=0.95,
+    )
 
-    log.info(f"Evaluation PR-AUC:  {pr_auc:.4f}")
-    log.info(f"Evaluation ROC-AUC: {roc_auc:.4f}")
+    pr_ci = eval_report.bootstrap_cis["pr_auc"]
+    roc_ci = eval_report.bootstrap_cis["roc_auc"]
+
+    log.info(
+        f"Evaluation PR-AUC:  {eval_report.pr_auc:.4f} "
+        f"(95% CI: [{pr_ci.ci_lower:.4f}, {pr_ci.ci_upper:.4f}])"
+    )
+    log.info(
+        f"Evaluation ROC-AUC: {eval_report.roc_auc:.4f} "
+        f"(95% CI: [{roc_ci.ci_lower:.4f}, {roc_ci.ci_upper:.4f}])"
+    )
+    log.info(
+        f"Calibration & KS:   Brier={eval_report.brier_score:.4f}, "
+        f"ECE={eval_report.calibration.expected_calibration_error:.4f}, "
+        f"KS={eval_report.ranking.ks_statistic:.4f} (p={eval_report.ranking.ks_pvalue:.3e})"
+    )
     log.info(f"Per-sample Latency: {latency_ms:.2f} ms")
 
     # 6. Log Artifacts to MLflow
+    model_version: str | None = None
     with mlflow.start_run(run_name=f"KumoTabular_{model_size.upper()}") as run:
         mlflow.log_params(
             {
                 "algorithm": "kumo-tabular",
                 "model_size": model_size,
-                "context_size": context_size,
+                "context_size": len(idx_context),
                 "device": device,
                 "sdm_native": SDM_AVAILABLE,
                 "num_features": len(available_features),
+                "n_bootstraps": n_bootstraps,
             }
         )
-        mlflow.log_metrics(
-            {
-                "pr_auc": pr_auc,
-                "roc_auc": roc_auc,
-                "brier_score": brier,
-                "latency_ms": latency_ms,
-            }
-        )
+        mlflow.log_metrics(eval_report.to_mlflow_metrics())
+        mlflow.log_dict(eval_report.to_dict(), "evaluation/statistical_evaluation_report.json")
 
         # Log PyFunc model
         model_info = mlflow.pyfunc.log_model(
@@ -312,16 +353,49 @@ def train_kumo_tabular(
         )
 
         run_id = run.info.run_id
-        log.info(f"KumoTabular run logged to MLflow [Run ID: {run_id}]")
+        if register_as:
+            reg_ver = getattr(model_info, "registered_model_version", None)
+            if reg_ver is not None:
+                model_version = str(reg_ver)
+            else:
+                client = MlflowClient()
+                versions = client.search_model_versions(f"name='{register_as}'")
+                matching = [v.version for v in versions if v.run_id == run_id]
+                if matching:
+                    model_version = str(matching[0])
+                elif versions:
+                    model_version = str(max(int(v.version) for v in versions))
+        log.info(
+            f"KumoTabular candidate logged to MLflow [Run ID: {run_id}, Version: {model_version}]"
+        )
 
     return {
         "run_id": run_id,
         "model_uri": model_info.model_uri,
-        "pr_auc": pr_auc,
-        "roc_auc": roc_auc,
-        "brier_score": brier,
+        "model_version": model_version,
+        "pr_auc": eval_report.pr_auc,
+        "pr_auc_ci_lower": pr_ci.ci_lower,
+        "pr_auc_ci_upper": pr_ci.ci_upper,
+        "roc_auc": eval_report.roc_auc,
+        "roc_auc_ci_lower": roc_ci.ci_lower,
+        "roc_auc_ci_upper": roc_ci.ci_upper,
+        "brier_score": eval_report.brier_score,
+        "brier_skill_score": eval_report.calibration.brier_skill_score,
+        "ece": eval_report.calibration.expected_calibration_error,
+        "ks_statistic": eval_report.ranking.ks_statistic,
+        "ks_pvalue": eval_report.ranking.ks_pvalue,
+        "mcc": eval_report.threshold_metrics.mcc,
+        "f1_score": eval_report.threshold_metrics.f1_score,
         "latency_ms": latency_ms,
         "model_name": register_as,
+        "statistical_evaluation": eval_report.to_dict(),
+        "eval_report": eval_report,
+        "X_test": X_test_processed,
+        "X_test_df": query_full,
+        "y_test": y_test,
+        "y_pred_proba": y_pred_proba,
+        "preprocessor": preprocessor,
+        "pyfunc_model": pyfunc_model,
     }
 
 
@@ -351,9 +425,20 @@ def main():
         device=args.device,
         mlflow_tracking_uri=args.tracking_uri,
     )
-    print("\n--- Training Results ---")
+    excluded_keys = {
+        "X_test",
+        "X_test_df",
+        "y_test",
+        "y_pred_proba",
+        "preprocessor",
+        "pyfunc_model",
+        "eval_report",
+        "statistical_evaluation",
+    }
+    print("\n--- Training & Statistical Evaluation Results ---")
     for k, v in results.items():
-        print(f"{k}: {v}")
+        if k not in excluded_keys:
+            print(f"{k}: {v}")
 
 
 if __name__ == "__main__":
